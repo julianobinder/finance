@@ -1,0 +1,192 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 120 15% 8%;
+    --card: 0 0% 100%;
+    --card-foreground: 120 15% 8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 120 15% 8%;
+    --primary: 120 100% 20%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 120 25% 95%;
+    --secondary-foreground: 120 15% 8%;
+    --muted: 120 25% 95%;
+    --muted-foreground: 120 10% 40%;
+    --accent: 120 25% 95%;
+    --accent-foreground: 120 15% 8%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 120 20% 85%;
+    --input: 120 20% 85%;
+    --ring: 120 100% 20%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 120 15% 8%;
+    --foreground: 120 10% 95%;
+    --card: 120 15% 10%;
+    --card-foreground: 120 10% 95%;
+    --popover: 120 15% 10%;
+    --popover-foreground: 120 10% 95%;
+    --primary: 120 100% 30%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 120 15% 15%;
+    --secondary-foreground: 120 10% 95%;
+    --muted: 120 15% 15%;
+    --muted-foreground: 120 10% 65%;
+    --accent: 120 15% 15%;
+    --accent-foreground: 120 10% 95%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 120 15% 20%;
+    --input: 120 15% 20%;
+    --ring: 120 100% 30%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Compact Ant Design Table Styling */
+.compact-table .ant-table-thead > tr > th {
+  padding: 0.25rem 1rem !important;
+  height: 2rem !important;
+  line-height: 1.5rem !important;
+  font-weight: 500 !important;
+  background: hsl(var(--muted) / 0.5) !important;
+  font-size: 0.875rem !important;
+}
+
+.compact-table .ant-table-tbody > tr > td {
+  padding: 0.25rem 0.5rem !important;
+  line-height: 1.5rem !important;
+}
+
+.compact-table .ant-table-summary > tr > td {
+  padding: 0.25rem 0.5rem !important;
+  line-height: 1.5rem !important;
+}
+
+.compact-table .ant-table {
+  font-size: 0.875rem !important;
+}
+
+/* Remove extra spacing */
+.compact-table .ant-table-cell {
+  padding: 0.25rem 0.5rem !important;
+}
+
+.compact-table .ant-table-thead .ant-table-cell {
+  padding: 0.25rem 1rem !important;
+}
+
+/* Global GravityUI overrides to match green Tailwind primary theme */
+.g-root_theme_light {
+  --g-color-base-brand: hsl(120, 100%, 20%) !important;
+  --g-color-base-brand-hover: hsl(120, 100%, 15%) !important;
+  --g-color-text-brand-contrast: hsl(0, 0%, 100%) !important;
+  --g-color-line-brand: hsl(120, 100%, 20%) !important;
+}
+
+.g-root_theme_dark {
+  --g-color-base-brand: hsl(120, 100%, 30%) !important;
+  --g-color-base-brand-hover: hsl(120, 100%, 25%) !important;
+  --g-color-text-brand-contrast: hsl(0, 0%, 100%) !important;
+  --g-color-line-brand: hsl(120, 100%, 30%) !important;
+}
+
+/* Enforce correct flex layout for GravityUI buttons to prevent wrapped icons/text */
+.g-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-direction: row !important;
+  white-space: nowrap !important;
+}
+
+.g-button__text {
+  display: inline-flex !important;
+  align-items: center !important;
+  flex-direction: row !important;
+  white-space: nowrap !important;
+}
+
+/* Legacy-style clean borderless dashboard tables */
+.compact-table {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  width: 100% !important;
+}
+
+.compact-table .g-table {
+  background: transparent !important;
+  width: 100% !important;
+  table-layout: fixed !important;
+}
+
+.compact-table .g-table__row {
+  background: transparent !important;
+  border: none !important;
+}
+
+.compact-table .g-table__row:hover {
+  background: hsl(var(--muted) / 0.3) !important;
+}
+
+.compact-table .g-table__cell {
+  background: transparent !important;
+  border: none !important;
+  padding: 0.25rem 0.75rem !important;
+}
+
+.compact-table .g-table__head {
+  background: transparent !important;
+  border: none !important;
+}
+
+.compact-table .g-table__head .g-table__cell {
+  background: transparent !important;
+  border: none !important;
+  font-weight: bold !important;
+  color: #000000 !important;
+  font-size: 1rem !important;
+}
+
+/* Styling for the total row */
+.compact-table .dashboard-total-row {
+  border-top: 1.5px solid #000000 !important;
+}
+
+.compact-table .dashboard-total-row:hover {
+  background: transparent !important;
+}
+
+.compact-table .dashboard-total-row .g-table__cell {
+  font-weight: bold !important;
+}
+
+/* Hide table headers completely */
+.hide-table-header .g-table__head,
+.hide-table-header thead {
+  display: none !important;
+}
+
+.drag-over-row {
+  background-color: hsl(var(--primary) / 0.15) !important;
+  outline: 2px dashed hsl(var(--primary)) !important;
+  outline-offset: -2px;
+}
+
+

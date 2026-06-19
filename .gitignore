@@ -1,0 +1,85 @@
+# ==========================================
+# Root .gitignore for Personal Finance App
+# ==========================================
+
+# OS/System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+/csv/
+# IDEs and Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# Monorepo Dependencies
+node_modules/
+**/node_modules/
+.venv/
+venv/
+**/venv/
+**/.venv/
+.agents/
+.antigravity.md
+capture-screenshots.sh
+skills-lock.json
+back/
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Local Databases
+*.db
+*.sqlite
+*.sqlite3
+db.sqlite3
+db.sqlite3-journal
+
+# Logs
+*.log
+logs/
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test and Build Artifacts
+dist/
+**/dist/
+build/
+**/build/
+coverage/
+**/coverage/
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+playwright-report/
+**/playwright-report/
+test-results/
+**/test-results/
+
+# Python Compilation
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Coverage Reports
+.coverage
+htmlcov/
+coverage.xml
+*.cover

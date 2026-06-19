@@ -1,0 +1,32 @@
+[project]
+name = "finance-backend"
+version = "1.0.0"
+description = "Finance App Backend API"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.28.0",
+    "sqlalchemy>=2.0.28",
+    "psycopg2-binary>=2.9.7",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.6.4",
+    "pydantic-settings>=2.2.1",
+    "python-multipart>=0.0.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["finance_api", "accounts", "transactions"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "FA", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SLOT", "SIM", "TID", "TCH", "INT", "ARG", "PTH", "TD", "FIX", "ERA", "PD", "PGH", "PL", "TRY", "FLY", "NPY", "AIR", "PERF", "FURB", "LOG", "RUF"]
+ignore = ["S101", "PLR0913", "PLR0912", "PLR0915", "PLR2004", "COM812", "ISC001"]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+"migrations/*" = ["ALL"]
