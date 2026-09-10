@@ -303,7 +303,7 @@ export function Home() {
             ...allCurrencies.map(currency_id => ({
               id: currency_id,
               name: currency_id,
-              align: 'right' as const,
+              align: 'end' as const,
               width: currencyWidth,
               template: (account: any) => {
                 if (account.isSummary) {

@@ -1,8 +1,11 @@
 FROM python:3.14-slim
 
-# Install system dependencies (including postgresql-client for pg_dump/pg_restore dynamic libraries)
+# Install system dependencies:
+#  - postgresql-client for pg_dump/pg_restore dynamic libraries
+#  - poppler-utils provides pdftotext, used to parse PDF bank statements
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
+    poppler-utils \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

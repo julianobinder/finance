@@ -74,10 +74,10 @@ def seed_default_lookups(db: Session) -> None:
 
         # 3. Seed Currencies
         currencies = [
-            (1, 'British Pound (GBP)', 'GBP', '£', 1),
-            (2, 'Brazilian Real (BRL)', 'BRL', 'R$', 4),
+            (2, 'Brazilian Real (BRL)', 'BRL', 'R$', 1),  # default currency, sorts first
+            (4, 'Euro (EUR)', 'EUR', '€', 2),
             (3, 'U.S. Dollar (USD)', 'USD', 'US$', 3),
-            (4, 'Euro (EUR)', 'EUR', '€', 2)
+            (1, 'British Pound (GBP)', 'GBP', '£', 4),
         ]
         for cid, name, iso, symbol, order in currencies:
             db.add(Currency(currency_id=cid, name=name, iso_code=iso, symbol=symbol, order=order))
@@ -117,6 +117,10 @@ def seed_default_lookups(db: Session) -> None:
             ))
         db.flush()
         logger.info("Database auto-increment serial sequences reset successfully.")
+
+        # Import templates are base reference data too, so they survive resets.
+        from app.seed_import_templates import seed_import_templates
+        seed_import_templates(db, commit=False)
 
     except SQLAlchemyError as e:
         logger.error(f"SQLAlchemy error during lookup seeding: {e}")

@@ -1,5 +1,6 @@
 from typing import Optional
 from sqlalchemy.orm import Session
+from app.category_utils import resolve_canonical_category_id
 from app.models import Account, Category, Transaction, TransactionType
 
 def get_tx_response_dict(tx: Transaction) -> dict:
@@ -102,7 +103,7 @@ def get_tx_response_dict(tx: Transaction) -> dict:
 
 def _create_splits(tx: Transaction, splits_data: list, db: Session):
     for split in splits_data:
-        cat_id = split.get("category_id") or split.get("category")
+        cat_id = resolve_canonical_category_id(db, split.get("category_id") or split.get("category"))
         amount = split.get("amount")
         comment = split.get("comment", "")
         if not cat_id or amount is None:

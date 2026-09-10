@@ -1,6 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
 from app.models import (
     AccountGroup,
@@ -8,11 +9,13 @@ from app.models import (
     AccountType,
     Category,
     Currency,
+    ImportPlanRule,
     Payee,
     Titular,
     Transaction,
-    ImportPlanRule,
 )
+from app.category_utils import resolve_canonical_category_id
+from app.payee_utils import resolve_canonical_payee_id
 from app.schemas import (
     AccountHolderCreate,
     AccountHolderResponse,
@@ -26,6 +29,7 @@ from app.schemas import (
     CurrencyCreate,
     CurrencyResponse,
     PayeeCreate,
+    PayeeMerge,
     PayeeResponse,
     TitularCreate,
     TitularResponse,
@@ -37,6 +41,19 @@ router = APIRouter(prefix="/accounts", tags=["Account Sub-resources"])
 
 def paginated_dict(results: list) -> dict:
     return {"count": len(results), "next": None, "previous": None, "results": results}
+
+
+def _count_by(db: Session, column) -> dict:
+    """Group-count non-null values of a FK column, e.g. Transaction.payee_id.
+
+    Used to report a "related records" total per payee/category — the
+    FK (RESTRICT, no ondelete) on Transaction/ImportPlanRule/the self-merge
+    columns is exactly what blocks a DELETE, so this tells the user when a
+    row is actually safe to delete (count reaches 0).
+    """
+    return dict(
+        db.query(column, func.count(column)).filter(column.isnot(None)).group_by(column).all()
+    )
 
 
 # Account Holders
@@ -222,9 +239,32 @@ def delete_account_group(pk: int, db: Session = Depends(get_db)):
 
 
 # Payees
+def _payee_response_dict(payee: Payee, related_count: int = 0) -> dict:
+    return {
+        "payee_id": payee.payee_id,
+        "name": payee.name,
+        "comment": payee.comment,
+        "merged_into_payee_id": payee.merged_into_payee_id,
+        "merged_into_payee_name": payee.merged_into.name if payee.merged_into else None,
+        "related_count": related_count,
+    }
+
+
 @router.get("/payees/", response_model=PaginatedResponse[PayeeResponse])
 def list_payees(db: Session = Depends(get_db)):
-    return paginated_dict(db.query(Payee).all())
+    payees = db.query(Payee).options(joinedload(Payee.merged_into)).all()
+
+    tx_counts = _count_by(db, Transaction.payee_id)
+    rule_counts = _count_by(db, ImportPlanRule.payee_id)
+    alias_counts = _count_by(db, Payee.merged_into_payee_id)
+
+    return paginated_dict([
+        _payee_response_dict(
+            p,
+            tx_counts.get(p.payee_id, 0) + rule_counts.get(p.payee_id, 0) + alias_counts.get(p.payee_id, 0),
+        )
+        for p in payees
+    ])
 
 
 @router.post("/payees/", response_model=PayeeResponse, status_code=status.HTTP_201_CREATED)
@@ -233,15 +273,20 @@ def create_payee(payload: PayeeCreate, db: Session = Depends(get_db)):
     db.add(payee)
     db.commit()
     db.refresh(payee)
-    return payee
+    return _payee_response_dict(payee)
 
 
 @router.get("/payees/{pk}/", response_model=PayeeResponse)
 def get_payee(pk: int, db: Session = Depends(get_db)):
-    payee = db.query(Payee).filter(Payee.payee_id == pk).first()
+    payee = (
+        db.query(Payee)
+        .options(joinedload(Payee.merged_into))
+        .filter(Payee.payee_id == pk)
+        .first()
+    )
     if not payee:
         raise HTTPException(status_code=404, detail="Payee not found")
-    return payee
+    return _payee_response_dict(payee)
 
 
 @router.put("/payees/{pk}/", response_model=PayeeResponse)
@@ -253,7 +298,7 @@ def update_payee(pk: int, payload: PayeeCreate, db: Session = Depends(get_db)):
     payee.comment = payload.comment
     db.commit()
     db.refresh(payee)
-    return payee
+    return _payee_response_dict(payee)
 
 
 @router.delete("/payees/{pk}/", status_code=status.HTTP_204_NO_CONTENT)
@@ -264,6 +309,70 @@ def delete_payee(pk: int, db: Session = Depends(get_db)):
     db.delete(payee)
     db.commit()
     return None
+
+
+@router.post("/payees/{pk}/merge/", response_model=PayeeResponse)
+def merge_payee(pk: int, payload: PayeeMerge, db: Session = Depends(get_db)):
+    """Mark ``pk`` as an alias of the destination payee.
+
+    Unlike category merge, this is non-destructive: the source row is kept
+    (never deleted) and existing transactions keep whichever payee they
+    already reference — only new transactions going forward resolve to the
+    canonical payee (see ``resolve_canonical_payee_id``). This lets import
+    rules and AI suggestions keep matching old bank-statement spellings
+    (e.g. "COEMI IMOB") by name while reporting rolls everything up under
+    one "official" payee.
+    """
+    source = db.query(Payee).filter(Payee.payee_id == pk).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source payee not found")
+
+    destination = (
+        db.query(Payee).filter(Payee.payee_id == payload.destination_payee_id).first()
+    )
+    if not destination:
+        raise HTTPException(status_code=404, detail="Destination payee not found")
+
+    if source.payee_id == destination.payee_id:
+        raise HTTPException(status_code=400, detail="Cannot merge a payee into itself")
+
+    # Always collapse to the destination's own root canonical, so chains
+    # never exceed length 1 and "merge A into B" behaves the same whether or
+    # not B is itself already an alias of something else.
+    root_id = resolve_canonical_payee_id(db, destination.payee_id)
+    if root_id == source.payee_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Destination is already an alias of this payee",
+        )
+
+    try:
+        # Re-point any payees currently aliased to the source so they follow
+        # it into the new group instead of being left pointing at a payee
+        # that is itself now an alias.
+        db.query(Payee).filter(Payee.merged_into_payee_id == source.payee_id).update(
+            {Payee.merged_into_payee_id: root_id}, synchronize_session=False
+        )
+        source.merged_into_payee_id = root_id
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error during merge: {str(e)}")
+
+    db.refresh(source)
+    return _payee_response_dict(source)
+
+
+@router.post("/payees/{pk}/unmerge/", response_model=PayeeResponse)
+def unmerge_payee(pk: int, db: Session = Depends(get_db)):
+    """Detach a payee from its canonical group, making it standalone again."""
+    payee = db.query(Payee).filter(Payee.payee_id == pk).first()
+    if not payee:
+        raise HTTPException(status_code=404, detail="Payee not found")
+    payee.merged_into_payee_id = None
+    db.commit()
+    db.refresh(payee)
+    return _payee_response_dict(payee)
 
 
 # Account Types
@@ -312,13 +421,29 @@ def delete_account_type(pk: int, db: Session = Depends(get_db)):
 
 
 # Categories
+def _category_response_dict(cat: Category, related_count: int = 0) -> dict:
+    return {
+        "category_id": cat.category_id,
+        "name": cat.name,
+        "parent_category_id": cat.parent_category_id,
+        "is_hidden": cat.is_hidden,
+        "merged_into_category_id": cat.merged_into_category_id,
+        "merged_into_category_name": cat.merged_into.name if cat.merged_into else None,
+        "related_count": related_count,
+    }
+
+
 @router.get("/categories/", response_model=PaginatedResponse[CategoryResponse])
 def list_categories(
     parent: Optional[str] = Query(None),
     roots: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Category).filter(Category.is_hidden == False)
+    query = (
+        db.query(Category)
+        .options(joinedload(Category.merged_into))
+        .filter(Category.is_hidden == False)
+    )
     if parent is not None:
         if parent.lower() == "null":
             query = query.filter(Category.parent_category_id.is_(None))
@@ -331,7 +456,25 @@ def list_categories(
         query = query.filter(Category.parent_category_id.is_(None))
 
     results = query.order_by(Category.name).all()
-    return paginated_dict(results)
+
+    tx_counts = _count_by(db, Transaction.category_id)
+    rule_counts = _count_by(db, ImportPlanRule.category_id)
+    alias_counts = _count_by(db, Category.merged_into_category_id)
+    # A parent category also can't be deleted while it still has
+    # sub-categories pointing at it via parent_category_id (RESTRICT) — count
+    # those too, or a parent could show 0 and still 500 on delete.
+    child_counts = _count_by(db, Category.parent_category_id)
+
+    return paginated_dict([
+        _category_response_dict(
+            c,
+            tx_counts.get(c.category_id, 0)
+            + rule_counts.get(c.category_id, 0)
+            + alias_counts.get(c.category_id, 0)
+            + child_counts.get(c.category_id, 0),
+        )
+        for c in results
+    ])
 
 
 @router.post("/categories/", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
@@ -345,15 +488,20 @@ def create_category(payload: CategoryCreate, db: Session = Depends(get_db)):
     db.add(category)
     db.commit()
     db.refresh(category)
-    return category
+    return _category_response_dict(category)
 
 
 @router.get("/categories/{pk}/", response_model=CategoryResponse)
 def get_category(pk: int, db: Session = Depends(get_db)):
-    cat = db.query(Category).filter(Category.category_id == pk).first()
+    cat = (
+        db.query(Category)
+        .options(joinedload(Category.merged_into))
+        .filter(Category.category_id == pk)
+        .first()
+    )
     if not cat:
         raise HTTPException(status_code=404, detail="Category not found")
-    return cat
+    return _category_response_dict(cat)
 
 
 @router.put("/categories/{pk}/", response_model=CategoryResponse)
@@ -366,7 +514,7 @@ def update_category(pk: int, payload: CategoryCreate, db: Session = Depends(get_
     cat.is_hidden = payload.is_hidden
     db.commit()
     db.refresh(cat)
-    return cat
+    return _category_response_dict(cat)
 
 
 @router.delete("/categories/{pk}/", status_code=status.HTTP_204_NO_CONTENT)
@@ -379,8 +527,16 @@ def delete_category(pk: int, db: Session = Depends(get_db)):
     return None
 
 
-@router.post("/categories/{pk}/merge/", status_code=status.HTTP_200_OK)
+@router.post("/categories/{pk}/merge/", response_model=CategoryResponse)
 def merge_category(pk: int, payload: CategoryMerge, db: Session = Depends(get_db)):
+    """Mark ``pk`` as an alias of the destination category.
+
+    Non-destructive, mirroring payee merge (see ``merge_payee``): the source
+    row is kept (never deleted) and existing transactions/import rules keep
+    whichever category they already reference — only new transactions going
+    forward resolve to the canonical category (see
+    ``resolve_canonical_category_id``).
+    """
     source_cat = db.query(Category).filter(Category.category_id == pk).first()
     if not source_cat:
         raise HTTPException(status_code=404, detail="Source category not found")
@@ -392,21 +548,40 @@ def merge_category(pk: int, payload: CategoryMerge, db: Session = Depends(get_db
     if source_cat.category_id == dest_cat.category_id:
         raise HTTPException(status_code=400, detail="Cannot merge a category into itself")
 
+    # Always collapse to the destination's own root canonical, so chains
+    # never exceed length 1 and "merge A into B" behaves the same whether or
+    # not B is itself already an alias of something else.
+    root_id = resolve_canonical_category_id(db, dest_cat.category_id)
+    if root_id == source_cat.category_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Destination is already an alias of this category",
+        )
+
     try:
-        db.query(Transaction).filter(Transaction.category_id == source_cat.category_id).update(
-            {Transaction.category_id: dest_cat.category_id},
-            synchronize_session=False
+        # Re-point any categories currently aliased to the source so they
+        # follow it into the new group instead of being left pointing at a
+        # category that is itself now an alias.
+        db.query(Category).filter(Category.merged_into_category_id == source_cat.category_id).update(
+            {Category.merged_into_category_id: root_id}, synchronize_session=False
         )
-
-        db.query(ImportPlanRule).filter(ImportPlanRule.category_id == source_cat.category_id).update(
-            {ImportPlanRule.category_id: dest_cat.category_id},
-            synchronize_session=False
-        )
-
-        db.delete(source_cat)
+        source_cat.merged_into_category_id = root_id
         db.commit()
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error during merge: {str(e)}")
 
-    return {"detail": f"Successfully merged category {source_cat.name} into {dest_cat.name}"}
+    db.refresh(source_cat)
+    return _category_response_dict(source_cat)
+
+
+@router.post("/categories/{pk}/unmerge/", response_model=CategoryResponse)
+def unmerge_category(pk: int, db: Session = Depends(get_db)):
+    """Detach a category from its canonical group, making it standalone again."""
+    cat = db.query(Category).filter(Category.category_id == pk).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    cat.merged_into_category_id = None
+    db.commit()
+    db.refresh(cat)
+    return _category_response_dict(cat)

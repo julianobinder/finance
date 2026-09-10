@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { NavigationProvider } from '@/contexts/NavigationContext';
 import { ConfirmationProvider } from '@/contexts/ConfirmationContext';
+import { DisplaySettingsProvider } from '@/contexts/DisplaySettingsContext';
 import { Layout } from '@/components/Layout/Layout';
 import { Home } from '@/pages/Home';
 import { Accounts } from '@/pages/Accounts';
@@ -17,6 +18,8 @@ import { Categories } from '@/pages/Categories';
 import { Payees } from '@/pages/Payees';
 import { Settings } from '@/pages/Settings';
 import { Reports } from '@/pages/Reports';
+import { Obligations } from '@/pages/Obligations';
+import { ImportObligations } from '@/pages/ImportObligations';
 
 // App core routing configuration
 function App() {
@@ -24,6 +27,7 @@ function App() {
     <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <NavigationProvider>
         <ConfirmationProvider>
+        <DisplaySettingsProvider>
           <Layout>
           <Routes>
             <Route path="/" element={<Home />} />
@@ -40,10 +44,13 @@ function App() {
             <Route path="/account-group" element={<Navigate to="/account-groups" replace />} />
             <Route path="/categories" element={<Categories />} />
             <Route path="/payees" element={<Payees />} />
+            <Route path="/obligations" element={<Obligations />} />
+            <Route path="/obligations/import" element={<ImportObligations />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
           </Layout>
+        </DisplaySettingsProvider>
         </ConfirmationProvider>
       </NavigationProvider>
     </Router>

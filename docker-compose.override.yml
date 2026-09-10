@@ -1,0 +1,30 @@
+# Auto-merged by `docker compose up`/`build` alongside docker-compose.yml —
+# no extra -f flags needed. Runs the frontend as Vite's dev server (HMR) with
+# the source bind-mounted, so frontend edits show up live without a rebuild.
+#
+# To verify the real production build (nginx serving optimized static
+# assets) instead, run `docker compose -f docker-compose.yml up -d --build
+# frontend` — the `-f docker-compose.yml` alone excludes this override.
+services:
+  frontend:
+    build:
+      target: dev
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume: keeps the container's own (Linux-built) node_modules
+      # instead of the bind mount shadowing it with the host's — avoids
+      # native-binary mismatches (esbuild/rollup) if the host is a different
+      # OS/arch. Re-run `docker compose build frontend` after changing
+      # package.json, then `docker compose up -d --force-recreate frontend`
+      # to drop the stale volume and pick up the new deps.
+      - /app/node_modules
+    # !override replaces the base's "3000:80" mapping entirely — Compose's
+    # default merge concatenates lists, which left both mappings active and
+    # fighting over host port 3000 (Compose Spec merge-control tag, v2.24+).
+    ports: !override
+      - "3000:3000"
+    environment:
+      VITE_DEV_API_PROXY_TARGET: http://backend:8000
+      # Bind-mounted host edits don't reliably fire inotify events inside the
+      # container, so Vite's watcher needs polling here (see vite.config.ts).
+      VITE_DEV_USE_POLLING: "true"

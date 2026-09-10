@@ -12,6 +12,10 @@ dependencies = [
     "pydantic>=2.6.4",
     "pydantic-settings>=2.2.1",
     "python-multipart>=0.0.9",
+    "xlrd>=2.0.1",
+    "openpyxl>=3.1.2",
+    "anthropic>=0.40.0",
+    "alembic>=1.13.0",
 ]
 
 [build-system]

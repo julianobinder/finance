@@ -1,22 +1,51 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { Button, Dialog, Select, Pagination, Loader, Alert, TableColumnConfig, TextInput } from '@gravity-ui/uikit';
+import { Button, Dialog, Select, Pagination, Loader, Alert, TableColumnConfig, TextInput, Checkbox } from '@gravity-ui/uikit';
 import { Table } from '@/components/ui/gravity-table';
 import { Plus, Upload as UploadIcon } from 'lucide-react';
 
 import { TransactionModal } from '../components/Transaction/TransactionModal';
 import api from '../services/api';
 import { showWarning, showError, showSuccess } from '../utils/notifications';
+import { formatAmount as formatAmountShared, formatDate as formatDateShared } from '../utils/format';
+import { useDisplaySettings } from '../contexts/DisplaySettingsContext';
 
-const dateFilterOptions = [
+const quickDateOptions = [
   { value: 'all', content: 'All Dates' },
-  { value: 'past', content: 'Past' },
-  { value: 'future', content: 'Future' },
+  { value: 'today', content: 'Today' },
   { value: 'last7', content: 'Last 7 Days' },
   { value: 'last30', content: 'Last 30 Days' },
   { value: 'this_month', content: 'This Month' },
   { value: 'this_year', content: 'This Year' },
 ];
+
+// Fills the granular From/To date fields from a quick pick; From/To stay
+// freely editable afterward for exact-date filtering.
+const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+const quickDateRange = (key: string): { from: string; to: string } => {
+  const today = new Date();
+  const to = isoDate(today);
+  switch (key) {
+    case 'today':
+      return { from: to, to };
+    case 'last7': {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 7);
+      return { from: isoDate(d), to };
+    }
+    case 'last30': {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 30);
+      return { from: isoDate(d), to };
+    }
+    case 'this_month':
+      return { from: isoDate(new Date(today.getFullYear(), today.getMonth(), 1)), to };
+    case 'this_year':
+      return { from: isoDate(new Date(today.getFullYear(), 0, 1)), to };
+    default:
+      return { from: '', to: '' };
+  }
+};
 
 interface Transaction {
   transaction_id: number;
@@ -157,6 +186,7 @@ const setCookie = (name: string, value: string, days = 365) => {
 };
 
 export function Transactions() {
+  const { defaultLocale } = useDisplaySettings();
   const { accountId } = useParams<{ accountId: string }>();
   const [account, setAccount] = useState<Account | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -169,7 +199,15 @@ export function Transactions() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [totalCount, setTotalCount] = useState(0);
-  const [dateFilter, setDateFilter] = useState<string | null>(null);
+  const [quickDate, setQuickDate] = useState('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [minAmount, setMinAmount] = useState('');
+  const [maxAmount, setMaxAmount] = useState('');
+  const [commentInput, setCommentInput] = useState('');
+  const [commentFilter, setCommentFilter] = useState('');
+  const [payeeFilter, setPayeeFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
   const [displayDateType, setDisplayDateType] = useState<string>(() => {
     if (accountId) {
       return getCookie(`display_date_type_account_${accountId}`) || 'cash';
@@ -180,7 +218,7 @@ export function Transactions() {
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importPlans, setImportPlans] = useState<ImportPlan[]>([]);
   const [selectedImportPlan, setSelectedImportPlan] = useState<string | undefined>(undefined);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [csvTemplate, setCsvTemplate] = useState<ImportCSV | null>(null);
   const [importResults, setImportResults] = useState<{
@@ -204,19 +242,31 @@ export function Transactions() {
     diff: number;
     payloads: any[];
   } | null>(null);
-  const [reconcileDuplicates, setReconcileDuplicates] = useState<{
-    csvDuplicates: any[];
-    dbMatches: any[];
-  }>({ csvDuplicates: [], dbMatches: [] });
-
   // Import Wizard State
   const [importWizardItems, setImportWizardItems] = useState<any[]>([]);
   const [currentWizardIndex, setCurrentWizardIndex] = useState<number>(-1);
   const [isImportWizardModalOpen, setIsImportWizardModalOpen] = useState<boolean>(false);
   const [allAccounts, setAllAccounts] = useState<any[]>([]);
-  // const [allPayees, setAllPayees] = useState<any[]>([]);
+  const [allPayees, setAllPayees] = useState<any[]>([]);
   const [allCurrencies, setAllCurrencies] = useState<any[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Bulk import review grid state
+  const [isReviewGridOpen, setIsReviewGridOpen] = useState<boolean>(false);
+  const [reviewRows, setReviewRows] = useState<any[]>([]);
+  const [reviewPlanId, setReviewPlanId] = useState<number | null>(null);
+  const [aiEnabled, setAiEnabled] = useState<boolean>(false);
+  const [aiLoading, setAiLoading] = useState<boolean>(false);
+
+  // Multi-select + bulk edit (payee/category) for the transaction list.
+  // Selection is scoped to the current page/filter view — it's cleared
+  // whenever the list is refetched (page, filters, or after applying).
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkSetPayee, setBulkSetPayee] = useState(false);
+  const [bulkPayeeId, setBulkPayeeId] = useState<string>('');
+  const [bulkSetCategory, setBulkSetCategory] = useState(false);
+  const [bulkCategoryId, setBulkCategoryId] = useState<string>('');
+  const [bulkApplying, setBulkApplying] = useState(false);
 
   const fetchAccountAndTransactions = useCallback(async () => {
     if (!accountId) {
@@ -235,14 +285,19 @@ export function Transactions() {
         page: currentPage.toString(),
         page_size: pageSize.toString(),
       });
-      
-      if (dateFilter) {
-        params.append('date_filter', dateFilter);
-      }
-      
+
+      if (fromDate) params.append('start_date', fromDate);
+      if (toDate) params.append('end_date', toDate);
+      if (minAmount) params.append('min_amount', minAmount);
+      if (maxAmount) params.append('max_amount', maxAmount);
+      if (commentFilter) params.append('comment', commentFilter);
+      if (payeeFilter !== 'all') params.append('payee_id', payeeFilter);
+      if (categoryFilter !== 'all') params.append('category_id', categoryFilter);
+
       const transactionsResponse = await api.get(`/accounts/${accountId}/transactions/`, { params });
       setTransactions(transactionsResponse.data.results || []);
       setTotalCount(transactionsResponse.data.count || 0);
+      setSelectedIds(new Set());
 
     } catch (err: any) {
       console.error('Error fetching data:', err);
@@ -253,14 +308,26 @@ export function Transactions() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, currentPage, pageSize, dateFilter]);
-  
+  }, [accountId, currentPage, pageSize, fromDate, toDate, minAmount, maxAmount, commentFilter, payeeFilter, categoryFilter]);
+
+  // Debounce the comment search so we don't fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setCommentFilter(commentInput.trim()), 400);
+    return () => clearTimeout(t);
+  }, [commentInput]);
+
+  // Any filter change invalidates the current page — jump back to page 1
+  // rather than showing an empty page 4 of a now much-smaller result set.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [fromDate, toDate, minAmount, maxAmount, commentFilter, payeeFilter, categoryFilter]);
+
   const loadLookupData = async () => {
     try {
       const response = await api.get('/transactions/lookup-data/');
       setAllCategories(response.data?.categories || []);
       setAllAccounts(response.data?.accounts || []);
-      // setAllPayees(response.data?.payees || []);
+      setAllPayees(response.data?.payees || []);
       setAllCurrencies(response.data?.currencies || []);
     } catch (error) {
       console.error('Failed to load lookup data:', error);
@@ -311,12 +378,7 @@ export function Transactions() {
     if (!dateString) return '';
     const date = new Date(dateString);
     if (isNaN(date.getTime())) return dateString;
-    return date.toLocaleDateString('en-GB', {
-      timeZone: 'UTC',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    });
+    return formatDateShared(date, defaultLocale);
   };
 
   const formatDateWithOrdinal = (dateString?: string) => {
@@ -349,7 +411,7 @@ export function Transactions() {
   };
 
   const formatCurrency = (amount: number, symbol: string) => {
-    return `${symbol} ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return formatAmountShared(amount, symbol, defaultLocale);
   };
 
   const handleAddTransaction = () => {
@@ -390,11 +452,17 @@ export function Transactions() {
   const handleOpenImportModal = async () => {
     await loadImportPlans();
     setImportResults(null);
-    setSelectedFile(null);
+    setSelectedFiles([]);
     setSelectedImportPlan(undefined);
     setStartBalance('');
     setEndBalance('');
     setIsImportModalOpen(true);
+    try {
+      const statusResp = await api.get('/transactions/ai-categorization/status/');
+      setAiEnabled(!!statusResp.data?.enabled);
+    } catch {
+      setAiEnabled(false);
+    }
   };
 
   const handleCloseImportModal = () => {
@@ -412,14 +480,25 @@ export function Transactions() {
   };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
+    const picked = Array.from(event.target.files || []);
+    if (picked.length === 0) return;
+    setSelectedFiles(prev => {
+      // Append and de-dupe by name+size so re-opening the picker doesn't drop earlier selections.
+      const existingKeys = new Set(prev.map(f => `${f.name}_${f.size}`));
+      const toAdd = picked.filter(f => !existingKeys.has(`${f.name}_${f.size}`));
+      return [...prev, ...toAdd];
+    });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
-  const clearSelectedFile = () => {
-    setSelectedFile(null);
+  const removeSelectedFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const clearSelectedFiles = () => {
+    setSelectedFiles([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -737,6 +816,8 @@ export function Transactions() {
       await api.post('/transactions/bulk/', payloads);
       showSuccess('CSV Import Completed Successfully!');
       setIsImportWizardModalOpen(false);
+      setIsReviewGridOpen(false);
+      setReviewRows([]);
       setIsImportModalOpen(false);
       setStartBalance('');
       setEndBalance('');
@@ -757,67 +838,6 @@ export function Transactions() {
     }
   };
 
-  const detectSameDayOccurrences = async (payloads: any[]) => {
-    if (payloads.length === 0) return { csvDuplicates: [], dbMatches: [] };
-
-    // 1. Group by cash date and amount to find identical same-day transactions in the CSV
-    const csvGroups: { [key: string]: any[] } = {};
-    payloads.forEach(p => {
-      const dateStr = p.cash;
-      const amt = Math.round(p.amount * 100) / 100;
-      const key = `${dateStr}_${amt}`;
-      if (!csvGroups[key]) csvGroups[key] = [];
-      csvGroups[key].push(p);
-    });
-
-    const csvDuplicates: any[] = [];
-    Object.values(csvGroups).forEach(group => {
-      if (group.length > 1) {
-        csvDuplicates.push(...group);
-      }
-    });
-
-    // 2. Query database for existing transactions in the date range of this import
-    const dates = payloads.map(p => p.cash).filter(Boolean);
-    if (dates.length === 0) {
-      return { csvDuplicates, dbMatches: [] };
-    }
-    dates.sort();
-    const minDate = dates[0];
-    const maxDate = dates[dates.length - 1];
-
-    const dbMatches: any[] = [];
-    try {
-      const response = await api.get(`/accounts/${accountId}/transactions/`, {
-        params: {
-          start_date: minDate,
-          end_date: maxDate,
-          page_size: 5000
-        }
-      });
-      const dbTxs = response.data.results || [];
-
-      // Check if imported transactions match any database transaction on date and amount
-      payloads.forEach(p => {
-        const pAmt = Math.round(p.amount * 100) / 100;
-        const matchedDbTx = dbTxs.find((dbTx: any) => {
-          const dbAmt = Math.round(dbTx.amount * 100) / 100;
-          return dbTx.cash === p.cash && dbAmt === pAmt;
-        });
-        if (matchedDbTx) {
-          dbMatches.push({
-            payload: p,
-            dbTransaction: matchedDbTx
-          });
-        }
-      });
-    } catch (err) {
-      console.error('Error fetching db transactions for duplicate detection:', err);
-    }
-
-    return { csvDuplicates, dbMatches };
-  };
-
   const commitImportBatch = async (items: any[]) => {
     setImportLoading(true);
     try {
@@ -835,6 +855,8 @@ export function Transactions() {
       if (payloads.length === 0) {
         showSuccess('Import completed with no transactions saved');
         setIsImportWizardModalOpen(false);
+        setIsReviewGridOpen(false);
+        setReviewRows([]);
         setIsImportModalOpen(false);
         setStartBalance('');
         setEndBalance('');
@@ -851,9 +873,6 @@ export function Transactions() {
         const roundedEndVal = Math.round(endVal * 100) / 100;
         const diff = Math.round((roundedEndVal - expectedEnd) * 100) / 100;
         if (Math.abs(diff) > 0.01) {
-          const duplicates = await detectSameDayOccurrences(payloads);
-          setReconcileDuplicates(duplicates);
-
           setReconcileWarningDetails({
             start: startVal,
             end: endVal,
@@ -916,10 +935,382 @@ export function Transactions() {
     showWarning('Import Cancelled', 'CSV import was aborted. No transactions were saved.');
   };
 
+  // ---- Bulk import review grid ----
+
+  // Match key: date + amount + normalized description. Requiring the
+  // description too (not just date+amount) avoids false positives like two
+  // unrelated same-amount purchases on the same day, while still reliably
+  // catching the real case: re-importing the same or an overlapping
+  // statement, where the bank's description text is byte-identical.
+  const dedupKey = (date: string, amount: number, comment: string) =>
+    `${date}|${Math.round(amount * 100)}|${(comment || '').trim().toLowerCase()}`;
+
+  // Flags rows that look like duplicates — either of another row in this
+  // same import batch (e.g. overlapping file date ranges) or of a
+  // transaction already saved in this account. Duplicates default to
+  // unchecked (excluded) so nothing gets silently double-imported; the user
+  // can still re-include a flagged row if it's a false positive.
+  const flagDuplicateRows = async (rows: any[]): Promise<any[]> => {
+    const dates = rows.map(r => r.date).filter(Boolean);
+    let existingKeys = new Set<string>();
+    if (dates.length > 0 && accountId) {
+      dates.sort();
+      try {
+        const response = await api.get(`/accounts/${accountId}/transactions/`, {
+          params: { start_date: dates[0], end_date: dates[dates.length - 1], page_size: 5000 },
+        });
+        const dbTxs = response.data.results || [];
+        existingKeys = new Set(
+          dbTxs.map((t: any) => dedupKey(t.cash, t.amount, t.comment || ''))
+        );
+      } catch (err) {
+        console.error('Error fetching existing transactions for duplicate detection:', err);
+      }
+    }
+
+    const seenInBatch = new Set<string>();
+    return rows.map(row => {
+      const key = dedupKey(row.date, row.amount, row.comments);
+      let isDuplicate = false;
+      let duplicateReason = '';
+      if (existingKeys.has(key)) {
+        isDuplicate = true;
+        duplicateReason = 'Already imported — matches an existing transaction in this account';
+      } else if (seenInBatch.has(key)) {
+        isDuplicate = true;
+        duplicateReason = 'Duplicate of another row in this import (same date, amount & description)';
+      }
+      seenInBatch.add(key);
+      return { ...row, isDuplicate, duplicateReason, include: !isDuplicate };
+    });
+  };
+
+  const categoryFullName = (categoryId: number | null): string => {
+    if (!categoryId) return '';
+    const cat = allCategories.find(c => c.category_id === categoryId);
+    if (!cat) return '';
+    if (cat.parent_category_id) {
+      const parent = allCategories.find(c => c.category_id === cat.parent_category_id);
+      return parent ? `${parent.name}: ${cat.name}` : cat.name;
+    }
+    return cat.name;
+  };
+
+  const categoryOptions = React.useMemo(
+    () =>
+      [...allCategories]
+        .map(c => ({ value: String(c.category_id), content: categoryFullName(c.category_id) }))
+        .sort((a, b) => a.content.localeCompare(b.content)),
+    [allCategories]
+  );
+
+  // Filter dropdowns only offer canonical (non-alias) payees/categories —
+  // matching them still catches transactions still tagged with an old alias
+  // id, since the backend resolves aliases server-side (see
+  // app/payee_utils.py / app/category_utils.py).
+  const filterCategoryOptions = React.useMemo(
+    () => [
+      { value: 'all', content: 'All Categories' },
+      ...[...allCategories]
+        .filter(c => !c.merged_into_category_id)
+        .map(c => ({ value: String(c.category_id), content: categoryFullName(c.category_id) }))
+        .sort((a, b) => a.content.localeCompare(b.content)),
+    ],
+    [allCategories]
+  );
+
+  const filterPayeeOptions = React.useMemo(
+    () => [
+      { value: 'all', content: 'All Payees' },
+      ...[...allPayees]
+        .filter(p => !p.merged_into_payee_id)
+        .map(p => ({ value: String(p.payee_id), content: p.name }))
+        .sort((a, b) => a.content.localeCompare(b.content)),
+    ],
+    [allPayees]
+  );
+
+  const hasActiveFilters = fromDate || toDate || minAmount || maxAmount || commentInput || payeeFilter !== 'all' || categoryFilter !== 'all';
+
+  const clearFilters = () => {
+    setQuickDate('all');
+    setFromDate('');
+    setToDate('');
+    setMinAmount('');
+    setMaxAmount('');
+    setCommentInput('');
+    setCommentFilter('');
+    setPayeeFilter('all');
+    setCategoryFilter('all');
+  };
+
+  const updateReviewRow = (index: number, patch: any) => {
+    setReviewRows(prev => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  };
+
+  // Copy a row's category/payee to every other row with the same description.
+  const applyRowToSimilar = (index: number) => {
+    setReviewRows(prev => {
+      const src = prev[index];
+      const key = (src.comments || '').trim().toLowerCase();
+      if (!key) return prev;
+      return prev.map(r =>
+        (r.comments || '').trim().toLowerCase() === key
+          ? {
+              ...r,
+              category_id: src.category_id,
+              newCategoryName: src.newCategoryName,
+              newCategoryParent: src.newCategoryParent,
+              payee_id: src.payee_id,
+              newPayeeName: src.newPayeeName,
+            }
+          : r
+      );
+    });
+  };
+
+  const handleAiAutofill = async () => {
+    if (aiLoading) return;
+    setAiLoading(true);
+    try {
+      const payload = {
+        transactions: reviewRows.map((r, i) => ({
+          index: i,
+          description: r.comments || '',
+          amount: r.amount,
+        })),
+      };
+      const resp = await api.post('/transactions/suggest-categorization/', payload);
+      const suggestions: any[] = resp.data?.suggestions || [];
+
+      setReviewRows(prev => {
+        const next = [...prev];
+        for (const s of suggestions) {
+          const row = next[s.index];
+          if (!row) continue;
+          const updated = { ...row, aiConfidence: s.confidence ?? null };
+          // Don't overwrite values the user (or a rule) already set.
+          if (!updated.category_id && !updated.newCategoryName) {
+            if (s.category_id) {
+              updated.category_id = s.category_id;
+            } else if (s.category) {
+              updated.newCategoryName = s.category;
+              updated.newCategoryParent = s.parent || null;
+            }
+          }
+          if (!updated.payee_id && !updated.newPayeeName && s.payee) {
+            const existing = allPayees.find(
+              p => p.name.trim().toLowerCase() === String(s.payee).trim().toLowerCase()
+            );
+            if (existing) {
+              updated.payee_id = existing.payee_id;
+            } else {
+              updated.newPayeeName = s.payee;
+            }
+          }
+          next[s.index] = updated;
+        }
+        return next;
+      });
+      showSuccess('AI suggestions applied', 'Review the filled categories and payees before importing.');
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail || (error instanceof Error ? error.message : 'Unknown error');
+      showError('AI auto-fill failed', detail);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const resolvePayeeId = async (row: any, createdCache: { [name: string]: number }): Promise<number | null> => {
+    if (row.payee_id) return row.payee_id;
+    const name = (row.newPayeeName || '').trim();
+    if (!name) return null;
+    const key = name.toLowerCase();
+    if (createdCache[key]) return createdCache[key];
+    const existing = allPayees.find(p => p.name.trim().toLowerCase() === key);
+    if (existing) {
+      createdCache[key] = existing.payee_id;
+      return existing.payee_id;
+    }
+    const resp = await api.post('/accounts/payees/', { name });
+    const newId = resp.data?.payee_id;
+    createdCache[key] = newId;
+    return newId;
+  };
+
+  // Find or create a category by name (optionally under a parent), caching within a batch.
+  const resolveCategoryByName = async (
+    name: string,
+    parentId: number | null,
+    cache: { [key: string]: number }
+  ): Promise<number | null> => {
+    const clean = (name || '').trim();
+    if (!clean) return null;
+    const key = `${parentId || ''}|${clean.toLowerCase()}`;
+    if (cache[key]) return cache[key];
+    const existing = allCategories.find(
+      c =>
+        c.name.trim().toLowerCase() === clean.toLowerCase() &&
+        (c.parent_category_id || null) === (parentId || null)
+    );
+    if (existing) {
+      cache[key] = existing.category_id;
+      return existing.category_id;
+    }
+    const resp = await api.post('/accounts/categories/', {
+      name: clean,
+      parent_category_id: parentId,
+      is_hidden: false,
+    });
+    const newId = resp.data?.category_id;
+    cache[key] = newId;
+    return newId;
+  };
+
+  const resolveCategoryId = async (
+    row: any,
+    cache: { [key: string]: number }
+  ): Promise<number | null> => {
+    if (row.category_id) return row.category_id;
+    if (!row.newCategoryName) return null;
+    let parentId: number | null = null;
+    if (row.newCategoryParent) {
+      parentId = await resolveCategoryByName(row.newCategoryParent, null, cache);
+    }
+    return resolveCategoryByName(row.newCategoryName, parentId, cache);
+  };
+
+  const handleReviewImport = async () => {
+    if (importLoading) return;
+    const rowsToImport = reviewRows.filter(r => r.include);
+    if (rowsToImport.length === 0) {
+      showWarning('Nothing selected', 'Select at least one row to import.');
+      return;
+    }
+    setImportLoading(true);
+    try {
+      const createdPayees: { [name: string]: number } = {};
+      const createdCats: { [key: string]: number } = {};
+
+      // 1. Create any new payees/categories and build transaction payloads.
+      const items: any[] = [];
+      for (const row of rowsToImport) {
+        const payeeId = await resolvePayeeId(row, createdPayees);
+        const categoryId = await resolveCategoryId(row, createdCats);
+        const resolved: any = {
+          accountId: parseInt(accountId || '0'),
+          cash: row.date,
+          payment: row.payment_date || null,
+          amount: row.amount,
+          comment: row.comments || '',
+          reference: row.reference || '',
+          payee_id: payeeId || null,
+          category_id: categoryId || null,
+          toAccountId: row.to_account_id || null,
+          transactionType: row.to_account_id ? 'transfer' : (row.amount > 0 ? 'deposit' : 'withdrawal'),
+        };
+        if (row.to_account_id) {
+          resolved.toAccountCash = row.date;
+          resolved.toAccountPayment = row.payment_date || null;
+        }
+        items.push({ isIgnored: false, resolvedData: resolved });
+        row._resolvedPayeeId = payeeId || null;
+        row._resolvedCategoryId = categoryId || null;
+      }
+
+      // 2. Learn rules from rows the user asked to remember.
+      await createRulesFromRows(rowsToImport);
+
+      // 3. Reuse the existing commit path (balance reconciliation + dedup + save).
+      await commitImportBatch(items);
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail || (error instanceof Error ? error.message : 'Unknown error');
+      showError('Import failed', detail);
+      setImportLoading(false);
+    }
+  };
+
+  const createRulesFromRows = async (rows: any[]) => {
+    if (!reviewPlanId || !csvTemplate) return;
+    // Rules match on the description column; find its template field id.
+    const descField = csvTemplate.fields.find(
+      (f: any) => (f.map_field || f.map) === 'COMMENTS'
+    ) || csvTemplate.fields.find(
+      (f: any) => (f.name || '').toLowerCase().startsWith('descri')
+    );
+    if (!descField) return;
+
+    const seenPatterns = new Set<string>();
+    const rulePayloads: any[] = [];
+    for (const row of rows) {
+      if (!row.rememberRule) continue;
+      const pattern = (row.comments || '').trim();
+      if (!pattern) continue;
+      const key = pattern.toLowerCase();
+      if (seenPatterns.has(key)) continue;
+      seenPatterns.add(key);
+      const payeeId = row._resolvedPayeeId ?? row.payee_id ?? null;
+      const categoryId = row._resolvedCategoryId ?? row.category_id ?? null;
+      if (!payeeId && !categoryId) continue; // nothing to remember
+      rulePayloads.push({
+        import_plan_id: reviewPlanId,
+        import_csv_field_id: descField.import_csv_field_id,
+        pattern,
+        order: 0,
+        ignore: false,
+        match_type: 'contains',
+        payee_id: payeeId,
+        category_id: categoryId,
+      });
+    }
+    if (rulePayloads.length > 0) {
+      try {
+        await api.post('/accounts/import-plan-rules/bulk/', rulePayloads);
+      } catch (error) {
+        console.error('Failed to save import rules:', error);
+        // Non-fatal — the import itself still succeeds.
+      }
+    }
+  };
+
+  const handleReviewCancel = () => {
+    setIsReviewGridOpen(false);
+    setReviewRows([]);
+    showWarning('Import Cancelled', 'No transactions were saved.');
+  };
+
+  // Parses one file into a plain { headers, rows } table. Non-CSV statements
+  // (Santander .xls / PDF) are normalized server-side into the same shape a
+  // plain CSV produces; .csv still parses client-side.
+  const parseFileToRows = async (file: File): Promise<{ headers: string[]; dataRows: string[][] }> => {
+    const fileName = file.name.toLowerCase();
+    const isBinaryStatement = /\.(xls|xlsx|pdf)$/.test(fileName);
+
+    if (isBinaryStatement) {
+      const formData = new FormData();
+      formData.append('file', file);
+      const parseResponse = await api.post('/accounts/parse-statement/', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      const headers = parseResponse.data.headers || [];
+      const dataRows = parseResponse.data.rows || [];
+      if (headers.length === 0 || dataRows.length === 0) {
+        throw new Error('No transactions were found in the statement file');
+      }
+      return { headers, dataRows };
+    }
+
+    const csvData = await parseCsvFile(file);
+    if (csvData.length < 2) {
+      throw new Error('CSV file must have at least a header row and one data row');
+    }
+    return { headers: csvData[0], dataRows: csvData.slice(1) };
+  };
+
   const handleImportCSV = async () => {
     if (importLoading) return;
-    if (!selectedImportPlan || !selectedFile || !csvTemplate) {
-      showWarning('Missing Information', 'Please select an import plan and a CSV file');
+    if (!selectedImportPlan || selectedFiles.length === 0 || !csvTemplate) {
+      showWarning('Missing Information', 'Please select an import plan and at least one file');
       return;
     }
 
@@ -927,56 +1318,69 @@ export function Transactions() {
     setImportResults(null);
 
     try {
-      const csvData = await parseCsvFile(selectedFile);
-      if (csvData.length < 2) {
-        throw new Error('CSV file must have at least a header row and one data row');
-      }
-
-      const headers = csvData[0];
-      const dataRows = csvData.slice(1);
-      
       const selectedPlan = importPlans.find(p => p.import_plan_id.toString() === selectedImportPlan);
       if (!selectedPlan) {
         throw new Error('Selected import plan not found');
       }
 
-      // Map rows and pre-parse
-      const parsedItems = dataRows.map((csvRow, idx) => {
-        const transaction = parseTransactionFromCsv(csvRow, headers);
-        
-        // Resolve original currency string to integer ID if present
-        if (transaction.original_currency_id) {
-          const orgCurrencyField = csvTemplate.fields.find(f => (f.map_field || f.map) === 'ORG_CURRENCY');
-          const formatType = (orgCurrencyField?.format_field || orgCurrencyField?.format || '').trim().toUpperCase();
-          
-          const valueToSearch = transaction.original_currency_id.trim().toLowerCase();
-          
-          let matched = null;
-          if (formatType === 'ISO') {
-            matched = allCurrencies.find(c => c.iso_code.toLowerCase() === valueToSearch);
-          } else if (formatType === 'SYMBOL') {
-            matched = allCurrencies.find(c => c.symbol.toLowerCase() === valueToSearch);
-          } else {
-            // Default fallback: search by ISO code first, then by symbol
-            matched = allCurrencies.find(c => c.iso_code.toLowerCase() === valueToSearch) ||
-                      allCurrencies.find(c => c.symbol.toLowerCase() === valueToSearch) ||
-                      allCurrencies.find(c => String(c.currency_id) === valueToSearch);
-          }
-          
-          if (matched) {
-            transaction.original_currency_id = String(matched.currency_id);
-          } else {
-            const isNumeric = /^\d+$/.test(transaction.original_currency_id);
-            if (!isNumeric) {
-              transaction.original_currency_id = undefined;
-            }
-          }
-        }
-        
-        return { csvRow, transaction, originalIndex: idx };
-      });
+      // Parse every selected file independently (each keeps its own headers,
+      // since header casing/order can differ file to file), then merge all
+      // rows into one combined batch before sorting/rule-matching/dedup.
+      const failedFiles: string[] = [];
+      const parsedItems: { csvRow: string[]; transaction: TransactionImport; headers: string[] }[] = [];
 
-      // Sort chronological: oldest to newest
+      for (const file of selectedFiles) {
+        try {
+          const { headers, dataRows } = await parseFileToRows(file);
+          for (const csvRow of dataRows) {
+            const transaction = parseTransactionFromCsv(csvRow, headers);
+
+            // Resolve original currency string to integer ID if present
+            if (transaction.original_currency_id) {
+              const orgCurrencyField = csvTemplate.fields.find(f => (f.map_field || f.map) === 'ORG_CURRENCY');
+              const formatType = (orgCurrencyField?.format_field || orgCurrencyField?.format || '').trim().toUpperCase();
+
+              const valueToSearch = transaction.original_currency_id.trim().toLowerCase();
+
+              let matched = null;
+              if (formatType === 'ISO') {
+                matched = allCurrencies.find(c => c.iso_code.toLowerCase() === valueToSearch);
+              } else if (formatType === 'SYMBOL') {
+                matched = allCurrencies.find(c => c.symbol.toLowerCase() === valueToSearch);
+              } else {
+                // Default fallback: search by ISO code first, then by symbol
+                matched = allCurrencies.find(c => c.iso_code.toLowerCase() === valueToSearch) ||
+                          allCurrencies.find(c => c.symbol.toLowerCase() === valueToSearch) ||
+                          allCurrencies.find(c => String(c.currency_id) === valueToSearch);
+              }
+
+              if (matched) {
+                transaction.original_currency_id = String(matched.currency_id);
+              } else {
+                const isNumeric = /^\d+$/.test(transaction.original_currency_id);
+                if (!isNumeric) {
+                  transaction.original_currency_id = undefined;
+                }
+              }
+            }
+
+            parsedItems.push({ csvRow, transaction, headers });
+          }
+        } catch (fileError) {
+          console.error(`Error parsing file ${file.name}:`, fileError);
+          failedFiles.push(file.name);
+        }
+      }
+
+      if (parsedItems.length === 0) {
+        throw new Error(
+          failedFiles.length > 0
+            ? `Could not parse any of the selected files: ${failedFiles.join(', ')}`
+            : 'No transactions were found in the selected files'
+        );
+      }
+
+      // Sort chronological: oldest to newest (across all files combined)
       const parseDateSafe = (dStr: string) => {
         const t = Date.parse(dStr);
         return isNaN(t) ? 0 : t;
@@ -988,8 +1392,8 @@ export function Transactions() {
       for (const item of parsedItems) {
         let tx = item.transaction;
         if (!tx.date || tx.amount === 0) continue;
-        
-        const { matchedRule, isIgnored } = applyImportRules(tx, item.csvRow, headers, selectedPlan.rules);
+
+        const { matchedRule, isIgnored } = applyImportRules(tx, item.csvRow, item.headers, selectedPlan.rules);
         
         const wizardItem: any = {
           date: tx.date,
@@ -1043,17 +1447,58 @@ export function Transactions() {
         wizardItems.push(wizardItem);
       }
 
-      const firstPendingIndex = wizardItems.findIndex(item => !item.isIgnored && !item.isMatched);
-      
-      if (firstPendingIndex === -1) {
-        await commitImportBatch(wizardItems);
-      } else {
-        setIsImportModalOpen(false);
-        setImportWizardItems(wizardItems);
-        setCurrentWizardIndex(firstPendingIndex);
-        setIsImportWizardModalOpen(true);
+      // Build the bulk review grid from every non-ignored row. Rules that
+      // matched already pre-filled payee_id/category_id; the rest start blank
+      // and can be filled by hand, by "apply to similar", or by AI.
+      const gridRows = wizardItems
+        .filter(item => !item.isIgnored)
+        .map(item => ({
+          date: item.date,
+          payment_date: item.payment_date,
+          amount: item.amount,
+          comments: item.comments || '',
+          reference: item.reference || '',
+          payee_desc: item.payee_desc || '',
+          csvRow: item.csvRow,
+          category_id: item.category_id ?? null,
+          payee_id: item.payee_id ?? null,
+          to_account_id: item.to_account_id ?? null,
+          newPayeeName: null as string | null,
+          newCategoryName: null as string | null,
+          newCategoryParent: null as string | null,
+          rememberRule: false,
+          aiConfidence: null as number | null,
+          include: true,
+        }));
+
+      if (gridRows.length === 0) {
+        showWarning('Nothing to import', 'All rows were ignored by the import plan rules.');
+        return;
       }
-      
+
+      // Flag rows that duplicate an existing transaction or another row in
+      // this same batch (e.g. overlapping file date ranges); those default
+      // to unchecked so nothing gets imported twice without explicit review.
+      const flaggedRows = await flagDuplicateRows(gridRows);
+      const duplicateCount = flaggedRows.filter(r => r.isDuplicate).length;
+
+      setReviewRows(flaggedRows);
+      setReviewPlanId(selectedPlan.import_plan_id);
+      setIsImportModalOpen(false);
+      setIsReviewGridOpen(true);
+
+      if (failedFiles.length > 0) {
+        showWarning(
+          'Some files could not be parsed',
+          `Skipped: ${failedFiles.join(', ')}. Continuing with the rest.`
+        );
+      } else if (duplicateCount > 0) {
+        showWarning(
+          'Possible duplicates found',
+          `${duplicateCount} row${duplicateCount > 1 ? 's' : ''} matched an existing or repeated transaction and ${duplicateCount > 1 ? 'were' : 'was'} unchecked. Review before importing.`
+        );
+      }
+
     } catch (error) {
       console.error('Error importing CSV:', error);
       showError('CSV Import Failed', error instanceof Error ? error.message : 'Unknown error');
@@ -1095,7 +1540,61 @@ export function Transactions() {
       showError('Failed to delete transaction', error instanceof Error ? error.message : 'Unknown error');
     }
   };
-  
+
+  const toggleSelectRow = (id: number, checked: boolean) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllOnPage = (checked: boolean) => {
+    setSelectedIds(checked ? new Set(transactions.map(t => t.transaction_id)) : new Set());
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setBulkSetPayee(false);
+    setBulkPayeeId('');
+    setBulkSetCategory(false);
+    setBulkCategoryId('');
+  };
+
+  const applyBulkEdit = async () => {
+    if (!bulkSetPayee && !bulkSetCategory) {
+      showError('Pick a payee and/or category to apply');
+      return;
+    }
+    if (bulkSetCategory && !bulkCategoryId) {
+      showError('Select a category to apply');
+      return;
+    }
+
+    setBulkApplying(true);
+    try {
+      const payload: any = { transaction_ids: Array.from(selectedIds) };
+      if (bulkSetPayee) {
+        payload.set_payee = true;
+        payload.payee_id = bulkPayeeId ? parseInt(bulkPayeeId, 10) : null;
+      }
+      if (bulkSetCategory) {
+        payload.set_category = true;
+        payload.category_id = parseInt(bulkCategoryId, 10);
+      }
+      const response = await api.post('/transactions/bulk-update/', payload);
+      const { updated, skipped } = response.data;
+      showSuccess(`Updated ${updated} transaction${updated === 1 ? '' : 's'}${skipped ? ` (${skipped} skipped — locked)` : ''}`);
+      clearSelection();
+      await fetchAccountAndTransactions();
+    } catch (error: any) {
+      showError('Failed to apply bulk edit', error?.response?.data?.detail || (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setBulkApplying(false);
+    }
+  };
+
+
   if (loading && !account) {
     return <div className="flex justify-center items-center h-screen"><Loader size="l" /></div>;
   }
@@ -1140,7 +1639,31 @@ export function Transactions() {
     return chosenDate || record.cash || record.date;
   };
 
+  const allSelectedOnPage = transactions.length > 0 && transactions.every(t => selectedIds.has(t.transaction_id));
+  const someSelectedOnPage = transactions.some(t => selectedIds.has(t.transaction_id));
+
   const columns: TableColumnConfig<Transaction>[] = [
+    {
+      id: 'select',
+      width: '3%',
+      name: () => (
+        <div onClick={(e) => e.stopPropagation()}>
+          <Checkbox
+            checked={allSelectedOnPage}
+            indeterminate={someSelectedOnPage && !allSelectedOnPage}
+            onUpdate={(checked) => toggleSelectAllOnPage(checked)}
+          />
+        </div>
+      ),
+      template: (record) => (
+        <div onClick={(e) => e.stopPropagation()}>
+          <Checkbox
+            checked={selectedIds.has(record.transaction_id)}
+            onUpdate={(checked) => toggleSelectRow(record.transaction_id, checked)}
+          />
+        </div>
+      ),
+    },
     {
       id: 'date',
       width: '14%',
@@ -1198,7 +1721,7 @@ export function Transactions() {
     {
       id: 'original',
       name: '',
-      align: 'right',
+      align: 'end',
       width: '8%',
       template: (record) => {
         const isMultiCurrency = record.original_currency_id && record.original_currency_id !== account.currency_id;
@@ -1210,12 +1733,12 @@ export function Transactions() {
         return null;
       }
     },
-    { id: 'out', name: 'Out', align: 'right', width: '7%', template: (record) => record.amount < 0 ? <span className="text-red-500">{formatCurrency(Math.abs(record.amount), '')}</span> : null },
-    { id: 'in', name: 'In', align: 'right', width: '7%', template: (record) => record.amount > 0 ? <span className="text-green-500">{formatCurrency(record.amount, '')}</span> : null },
+    { id: 'out', name: 'Out', align: 'end', width: '7%', template: (record) => record.amount < 0 ? <span className="text-red-500">{formatCurrency(Math.abs(record.amount), '')}</span> : null },
+    { id: 'in', name: 'In', align: 'end', width: '7%', template: (record) => record.amount > 0 ? <span className="text-green-500">{formatCurrency(record.amount, '')}</span> : null },
     {
       id: 'balance',
       name: 'Balance',
-      align: 'right',
+      align: 'end',
       width: '8%',
       template: (record) => {
         const bal = record.balance ?? 0;
@@ -1261,23 +1784,146 @@ export function Transactions() {
           </div>
         </div>
 
-        <div className="bg-muted/50 p-4 rounded-lg flex justify-between items-center">
-            <div className="flex items-center gap-2">
-                <span>Filter:</span>
-                <Select
-                  value={dateFilter ? [dateFilter] : ['all']}
-                  onUpdate={(val) => setDateFilter(val[0] === 'all' ? null : val[0])}
-                  options={dateFilterOptions}
+        <div className="bg-muted/50 p-4 rounded-lg flex flex-col gap-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="text-xs font-semibold block mb-1 text-muted-foreground">Comment</label>
+                <TextInput
+                  placeholder="Search comment…"
+                  value={commentInput}
+                  onUpdate={setCommentInput}
+                  size="m"
                 />
+              </div>
+              <div>
+                <label className="text-xs font-semibold block mb-1 text-muted-foreground">Payee</label>
+                <Select
+                  value={[payeeFilter]}
+                  onUpdate={(val) => setPayeeFilter(val[0] || 'all')}
+                  options={filterPayeeOptions}
+                  filterable
+                  width={180}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold block mb-1 text-muted-foreground">Category</label>
+                <Select
+                  value={[categoryFilter]}
+                  onUpdate={(val) => setCategoryFilter(val[0] || 'all')}
+                  options={filterCategoryOptions}
+                  filterable
+                  width={200}
+                />
+              </div>
+              <div className="flex gap-1 items-end">
+                <div>
+                  <label className="text-xs font-semibold block mb-1 text-muted-foreground">Min Value</label>
+                  <TextInput
+                    placeholder="0.00"
+                    value={minAmount}
+                    onUpdate={setMinAmount}
+                    size="m"
+                    style={{ width: 90 }}
+                  />
+                </div>
+                <span className="pb-2 text-muted-foreground">–</span>
+                <div>
+                  <label className="text-xs font-semibold block mb-1 text-muted-foreground">Max Value</label>
+                  <TextInput
+                    placeholder="0.00"
+                    value={maxAmount}
+                    onUpdate={setMaxAmount}
+                    size="m"
+                    style={{ width: 90 }}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold block mb-1 text-muted-foreground">Quick Range</label>
+                <Select
+                  value={[quickDate]}
+                  onUpdate={(val) => {
+                    const key = val[0] || 'all';
+                    setQuickDate(key);
+                    const { from, to } = quickDateRange(key);
+                    setFromDate(from);
+                    setToDate(to);
+                  }}
+                  options={quickDateOptions}
+                  width={140}
+                />
+              </div>
+              <div className="flex gap-1 items-end">
+                <div>
+                  <label className="text-xs font-semibold block mb-1 text-muted-foreground">From</label>
+                  <input
+                    type="date"
+                    className="border rounded p-1.5 text-sm bg-background text-foreground"
+                    value={fromDate}
+                    onChange={(e) => { setFromDate(e.target.value); setQuickDate('all'); }}
+                  />
+                </div>
+                <span className="pb-2 text-muted-foreground">–</span>
+                <div>
+                  <label className="text-xs font-semibold block mb-1 text-muted-foreground">To</label>
+                  <input
+                    type="date"
+                    className="border rounded p-1.5 text-sm bg-background text-foreground"
+                    value={toDate}
+                    onChange={(e) => { setToDate(e.target.value); setQuickDate('all'); }}
+                  />
+                </div>
+              </div>
+              {hasActiveFilters && (
+                <Button view="flat" onClick={clearFilters}>Clear Filters</Button>
+              )}
             </div>
-            <Pagination
-                page={currentPage}
-                total={totalCount}
-                pageSize={pageSize}
-                onUpdate={(page, size) => { setCurrentPage(page); setPageSize(size); }}
-                pageSizeOptions={[25, 50, 100, 200]}
-            />
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-muted-foreground">{totalCount} transaction{totalCount === 1 ? '' : 's'}</span>
+              <Pagination
+                  page={currentPage}
+                  total={totalCount}
+                  pageSize={pageSize}
+                  onUpdate={(page, size) => { setCurrentPage(page); setPageSize(size); }}
+                  pageSizeOptions={[25, 50, 100, 200]}
+              />
+            </div>
         </div>
+
+        {selectedIds.size > 0 && (
+          <div className="bg-primary/5 dark:bg-primary/10 border border-primary/20 p-4 rounded-lg flex flex-wrap items-end gap-3">
+            <span className="text-sm font-semibold pb-2">{selectedIds.size} selected</span>
+            <div className="flex items-end gap-2">
+              <Checkbox checked={bulkSetPayee} onUpdate={setBulkSetPayee}>Set Payee</Checkbox>
+              <Select
+                disabled={!bulkSetPayee}
+                placeholder="Clear payee"
+                value={bulkPayeeId ? [bulkPayeeId] : []}
+                onUpdate={(val) => setBulkPayeeId(val[0] || '')}
+                options={filterPayeeOptions.slice(1)}
+                filterable
+                hasClear
+                width={180}
+              />
+            </div>
+            <div className="flex items-end gap-2">
+              <Checkbox checked={bulkSetCategory} onUpdate={setBulkSetCategory}>Set Category</Checkbox>
+              <Select
+                disabled={!bulkSetCategory}
+                placeholder="Select category"
+                value={bulkCategoryId ? [bulkCategoryId] : []}
+                onUpdate={(val) => setBulkCategoryId(val[0] || '')}
+                options={filterCategoryOptions.slice(1)}
+                filterable
+                width={200}
+              />
+            </div>
+            <Button view="action" loading={bulkApplying} disabled={bulkApplying} onClick={applyBulkEdit}>
+              Apply to {selectedIds.size}
+            </Button>
+            <Button view="flat" onClick={clearSelection}>Clear Selection</Button>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center p-8"><Loader size="l" /></div>
@@ -1337,22 +1983,35 @@ export function Transactions() {
               </div>
             </div>
             
-            <div className="flex items-center gap-2">
-              <input 
-                type="file" 
-                accept=".csv" 
+            <div className="flex flex-col gap-2">
+              <input
+                type="file"
+                accept=".csv,.xls,.xlsx,.pdf"
+                multiple
                 ref={fileInputRef}
                 onChange={handleFileChange}
-                style={{ display: 'none' }} 
+                style={{ display: 'none' }}
               />
-              <Button onClick={() => fileInputRef.current?.click()}>
-                <UploadIcon className="mr-2 h-4 w-4" /> Select File
-              </Button>
-              {selectedFile && (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm">{selectedFile.name}</span>
-                  <Button view="flat-danger" size="s" onClick={clearSelectedFile}>Clear</Button>
-                </div>
+              <div className="flex items-center gap-2">
+                <Button onClick={() => fileInputRef.current?.click()}>
+                  <UploadIcon className="mr-2 h-4 w-4" /> Select Files
+                </Button>
+                {selectedFiles.length > 0 && (
+                  <>
+                    <span className="text-sm">{selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} selected</span>
+                    <Button view="flat-danger" size="s" onClick={clearSelectedFiles}>Clear All</Button>
+                  </>
+                )}
+              </div>
+              {selectedFiles.length > 0 && (
+                <ul className="flex flex-col gap-1">
+                  {selectedFiles.map((file, i) => (
+                    <li key={`${file.name}_${file.size}_${i}`} className="flex items-center justify-between gap-2 text-sm">
+                      <span className="truncate">{file.name}</span>
+                      <Button view="flat-danger" size="s" onClick={() => removeSelectedFile(i)}>Remove</Button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
 
@@ -1382,7 +2041,172 @@ export function Transactions() {
           textButtonApply={importLoading ? 'Importing...' : 'Import'}
           onClickButtonCancel={handleCloseImportModal}
           onClickButtonApply={handleImportCSV}
-          propsButtonApply={{ disabled: !selectedImportPlan || !selectedFile || importLoading, loading: importLoading }}
+          propsButtonApply={{ disabled: !selectedImportPlan || selectedFiles.length === 0 || importLoading, loading: importLoading }}
+        />
+      </Dialog>
+
+      <Dialog open={isReviewGridOpen} onClose={handleReviewCancel}>
+        <Dialog.Header caption="Review & Import Transactions" />
+        <Dialog.Body>
+          <div style={{ width: 'min(1100px, 88vw)' }}>
+            <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+              <span className="text-sm">
+                {reviewRows.filter(r => r.include).length} of {reviewRows.length} selected ·{' '}
+                {reviewRows.filter(r => r.include && !r.category_id).length} uncategorized
+                {reviewRows.some(r => r.isDuplicate) && (
+                  <> · <span className="text-amber-600">{reviewRows.filter(r => r.isDuplicate).length} possible duplicate{reviewRows.filter(r => r.isDuplicate).length > 1 ? 's' : ''} unchecked</span></>
+                )}
+              </span>
+              <div className="flex items-center gap-2">
+                {aiEnabled && (
+                  <Button view="outlined-action" onClick={handleAiAutofill} loading={aiLoading} disabled={aiLoading}>
+                    ✨ Auto-fill with AI
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div style={{ maxHeight: '58vh', overflow: 'auto', border: '1px solid var(--g-color-line-generic)', borderRadius: 6 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead style={{ position: 'sticky', top: 0, background: 'var(--g-color-base-background)', zIndex: 1 }}>
+                  <tr className="text-left">
+                    <th style={{ padding: '6px 8px', width: 32 }}></th>
+                    <th style={{ padding: '6px 8px', width: 90 }}>Date</th>
+                    <th style={{ padding: '6px 8px' }}>Description</th>
+                    <th style={{ padding: '6px 8px', width: 100, textAlign: 'right' }}>Amount</th>
+                    <th style={{ padding: '6px 8px', width: 230 }}>Category</th>
+                    <th style={{ padding: '6px 8px', width: 230 }}>Payee</th>
+                    <th style={{ padding: '6px 8px', width: 70, textAlign: 'center' }} title="Save a rule so future imports auto-fill this description">Rule</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reviewRows.map((row, i) => {
+                    const payeeOptions = allPayees.map(p => ({ value: String(p.payee_id), content: p.name }));
+                    let payeeValue: string[] = [];
+                    if (row.payee_id) {
+                      payeeValue = [String(row.payee_id)];
+                    } else if (row.newPayeeName) {
+                      payeeOptions.unshift({ value: `new:${row.newPayeeName}`, content: `➕ ${row.newPayeeName} (new)` });
+                      payeeValue = [`new:${row.newPayeeName}`];
+                    }
+                    const catOpts = [...categoryOptions];
+                    let catValue: string[] = [];
+                    if (row.category_id) {
+                      catValue = [String(row.category_id)];
+                    } else if (row.newCategoryName) {
+                      const label = row.newCategoryParent ? `${row.newCategoryParent}: ${row.newCategoryName}` : row.newCategoryName;
+                      catOpts.unshift({ value: `newcat:${label}`, content: `➕ ${label} (new)` });
+                      catValue = [`newcat:${label}`];
+                    }
+                    const promptNewCategory = () => {
+                      const input = window.prompt("New category — use 'Parent: Child' for a subcategory:");
+                      if (!input || !input.trim()) return;
+                      const t = input.trim();
+                      if (t.includes(':')) {
+                        const idx = t.indexOf(':');
+                        updateReviewRow(i, { category_id: null, newCategoryParent: t.slice(0, idx).trim(), newCategoryName: t.slice(idx + 1).trim() });
+                      } else {
+                        updateReviewRow(i, { category_id: null, newCategoryParent: null, newCategoryName: t });
+                      }
+                    };
+                    const promptNewPayee = () => {
+                      const input = window.prompt('New payee name:');
+                      if (!input || !input.trim()) return;
+                      updateReviewRow(i, { payee_id: null, newPayeeName: input.trim() });
+                    };
+                    return (
+                      <tr
+                        key={i}
+                        style={{
+                          borderTop: '1px solid var(--g-color-line-generic)',
+                          opacity: row.include ? 1 : 0.45,
+                          background: row.isDuplicate ? 'rgba(217, 119, 6, 0.08)' : undefined,
+                        }}
+                      >
+                        <td style={{ padding: '4px 8px' }}>
+                          <Checkbox checked={row.include} onUpdate={(checked) => updateReviewRow(i, { include: checked })} />
+                        </td>
+                        <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{formatDate(row.date)}</td>
+                        <td style={{ padding: '4px 8px', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.duplicateReason || row.comments}>
+                          {row.isDuplicate && (
+                            <span className="text-amber-600 font-semibold" style={{ marginRight: 6 }} title={row.duplicateReason}>⚠ Duplicate</span>
+                          )}
+                          {row.comments}
+                          {row.aiConfidence != null && (
+                            <span className="text-xs" style={{ opacity: 0.5, marginLeft: 6 }}>({Math.round(row.aiConfidence * 100)}%)</span>
+                          )}
+                        </td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          <span className={row.amount < 0 ? 'text-red-500' : 'text-green-500'}>{row.amount.toFixed(2)}</span>
+                        </td>
+                        <td style={{ padding: '4px 8px' }}>
+                          <div className="flex items-center gap-1">
+                            <Select
+                              size="s"
+                              filterable
+                              width="max"
+                              placeholder="Uncategorized"
+                              hasClear
+                              value={catValue}
+                              options={catOpts}
+                              onUpdate={(vals) => {
+                                const v = vals[0];
+                                if (!v) updateReviewRow(i, { category_id: null, newCategoryName: null, newCategoryParent: null });
+                                else if (!v.startsWith('newcat:')) updateReviewRow(i, { category_id: parseInt(v, 10), newCategoryName: null, newCategoryParent: null });
+                              }}
+                            />
+                            <Button view="flat" size="s" onClick={promptNewCategory} title="Create a new category">＋</Button>
+                          </div>
+                        </td>
+                        <td style={{ padding: '4px 8px' }}>
+                          <div className="flex items-center gap-1">
+                            <Select
+                              size="s"
+                              filterable
+                              width="max"
+                              placeholder="—"
+                              hasClear
+                              value={payeeValue}
+                              options={payeeOptions}
+                              onUpdate={(vals) => {
+                                const v = vals[0];
+                                if (!v) updateReviewRow(i, { payee_id: null, newPayeeName: null });
+                                else if (v.startsWith('new:')) updateReviewRow(i, { payee_id: null, newPayeeName: v.slice(4) });
+                                else updateReviewRow(i, { payee_id: parseInt(v, 10), newPayeeName: null });
+                              }}
+                            />
+                            <Button view="flat" size="s" onClick={promptNewPayee} title="Create a new payee">＋</Button>
+                          </div>
+                        </td>
+                        <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                          <Checkbox
+                            checked={row.rememberRule}
+                            disabled={!row.category_id && !row.payee_id && !row.newPayeeName}
+                            onUpdate={(checked) => updateReviewRow(i, { rememberRule: checked })}
+                          />
+                          {i === 0 || (reviewRows[i - 1]?.comments || '').trim().toLowerCase() !== (row.comments || '').trim().toLowerCase() ? (
+                            <div>
+                              <Button view="flat" size="s" onClick={() => applyRowToSimilar(i)} title="Apply this row's category & payee to all rows with the same description">↧ similar</Button>
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs mt-2" style={{ opacity: 0.6 }}>
+              Rows left uncategorized import as-is (no category/payee) and can be edited later. Check "Rule" to remember a description → category/payee for future imports.
+            </p>
+          </div>
+        </Dialog.Body>
+        <Dialog.Footer
+          preset="default"
+          textButtonCancel="Cancel"
+          textButtonApply={importLoading ? 'Importing...' : `Import ${reviewRows.filter(r => r.include).length}`}
+          onClickButtonCancel={handleReviewCancel}
+          onClickButtonApply={handleReviewImport}
+          propsButtonApply={{ disabled: importLoading || reviewRows.filter(r => r.include).length === 0, loading: importLoading }}
         />
       </Dialog>
 
@@ -1418,39 +2242,9 @@ export function Transactions() {
                 <span>{reconcileWarningDetails?.diff.toFixed(2)}</span>
               </div>
             </div>
-            
-            {reconcileDuplicates.csvDuplicates.length > 0 && (
-              <div className="flex flex-col gap-1 border rounded-md p-3 bg-amber-50/50">
-                <span className="text-xs font-semibold text-amber-800 uppercase tracking-wider">Same-day identical transactions in CSV:</span>
-                <div className="max-h-32 overflow-y-auto flex flex-col gap-1 text-xs text-slate-700 mt-1">
-                  {reconcileDuplicates.csvDuplicates.map((item, idx) => (
-                    <div key={idx} className="flex justify-between border-b pb-1 last:border-0">
-                      <span>{item.cash} - {item.comment || item.payee_desc || 'Unknown Payee'}</span>
-                      <span className="font-semibold">{item.amount.toFixed(2)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {reconcileDuplicates.dbMatches.length > 0 && (
-              <div className="flex flex-col gap-1 border rounded-md p-3 bg-red-50/50">
-                <span className="text-xs font-semibold text-red-800 uppercase tracking-wider">Potential duplicate matches in Database:</span>
-                <div className="max-h-32 overflow-y-auto flex flex-col gap-1 text-xs text-slate-700 mt-1">
-                  {reconcileDuplicates.dbMatches.map((match, idx) => (
-                    <div key={idx} className="flex justify-between border-b pb-1 last:border-0">
-                      <span>{match.payload.cash} - {match.payload.comment || match.dbTransaction.payee_name || 'Unknown'}</span>
-                      <span>
-                        Importing: <span className="font-semibold text-red-700">{match.payload.amount.toFixed(2)}</span> (DB: {match.dbTransaction.amount.toFixed(2)})
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
             <p className="text-xs text-slate-500">
-              This discrepancy could be caused by omitted duplicate same-day transactions in the CSV file, missing statement entries, or timezone issues. Please check your bank statement.
+              Possible duplicates are already flagged and unchecked in the review grid — this discrepancy is more likely a missing statement entry, an uncategorized fee, or a timezone issue. Please check your bank statement.
             </p>
           </div>
         </Dialog.Body>

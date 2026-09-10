@@ -83,6 +83,41 @@ def create_import_plan_rule(
     }
 
 
+@router.post("/import-plan-rules/bulk/", status_code=status.HTTP_201_CREATED)
+def create_import_plan_rules_bulk(
+    payload: list[ImportPlanRuleCreate], db: Session = Depends(get_db)
+):
+    """Create many import-plan rules at once (used by 'remember as rule')."""
+    created_ids = []
+    for item in payload:
+        plan = (
+            db.query(ImportPlan)
+            .filter(ImportPlan.import_plan_id == item.import_plan_id)
+            .first()
+        )
+        if not plan:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Import plan {item.import_plan_id} not found",
+            )
+        rule = ImportPlanRule(
+            import_plan_id=item.import_plan_id,
+            import_csv_field_id=item.import_csv_field_id,
+            pattern=item.pattern,
+            order=item.order,
+            ignore=item.ignore,
+            match_type=item.match_type,
+            payee_id=item.payee_id,
+            category_id=item.category_id,
+            to_account_id=item.to_account_id,
+        )
+        db.add(rule)
+        db.flush()
+        created_ids.append(rule.import_plan_rule_id)
+    db.commit()
+    return {"created": len(created_ids), "import_plan_rule_ids": created_ids}
+
+
 @router.get("/import-plan-rules/{pk}/", response_model=ImportPlanRuleResponse)
 def get_import_plan_rule(pk: int, db: Session = Depends(get_db)):
     r = (

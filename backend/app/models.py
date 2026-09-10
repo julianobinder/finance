@@ -200,8 +200,12 @@ class Category(Base):
         "parent_category_id", Integer, ForeignKey("category.category_id"), nullable=True
     )
     is_hidden = Column("is_hidden", Boolean, default=False, nullable=False)
+    merged_into_category_id = Column(
+        "merged_into_category_id", Integer, ForeignKey("category.category_id"), nullable=True
+    )
 
-    parent = relationship("Category", remote_side=[category_id])
+    parent = relationship("Category", remote_side=[category_id], foreign_keys=[parent_category_id])
+    merged_into = relationship("Category", remote_side=[category_id], foreign_keys=[merged_into_category_id])
 
     def __str__(self):
         return self.name
@@ -213,6 +217,15 @@ class Payee(Base):
     payee_id = Column("payee_id", Integer, primary_key=True, autoincrement=True)
     name = Column("name", String(255), nullable=False)
     comment = Column("comment", Text, nullable=True)
+    # Non-destructive merge: when set, this payee is an alias of another
+    # payee (the canonical/"official" one). The row itself is never deleted
+    # by a merge, so import rules and AI suggestions can keep matching it by
+    # name; new transactions are written against the canonical payee instead.
+    merged_into_payee_id = Column(
+        "merged_into_payee_id", Integer, ForeignKey("payee.payee_id"), nullable=True
+    )
+
+    merged_into = relationship("Payee", remote_side=[payee_id])
 
     def __str__(self):
         return self.name
@@ -371,4 +384,270 @@ class Transaction(Base):
         if self.due is not None:
             return self.due
         return self.entry.date() if isinstance(self.entry, datetime) else self.entry
+
+
+class ObligationImportFormat(Base):
+    """Reusable column-mapping for importing obligations from an xlsx/csv file.
+
+    Obligation-scoped only (no account/currency/titular defaults) — obligations
+    are not tied to an account, only the transactions later assigned to them are.
+    """
+
+    __tablename__ = "obligation_import_format"
+
+    obligation_import_format_id = Column(
+        "obligation_import_format_id", Integer, primary_key=True, autoincrement=True
+    )
+    name = Column("name", String(255), nullable=False)
+    file_type = Column("file_type", String(10), default="xlsx", nullable=False)
+    sheet_name = Column("sheet_name", String(255), nullable=True)
+    header_row = Column("header_row", Integer, default=1, nullable=False)
+    date_format = Column("date_format", String(50), nullable=True)
+    decimal_separator = Column("decimal_separator", String(1), default=".", nullable=False)
+    # Assumed cadence when the mapped recurrence column is blank/unmapped.
+    default_recurrence = Column("default_recurrence", String(10), default="monthly", nullable=True)
+    default_category_id = Column(
+        "default_category_id", Integer, ForeignKey("category.category_id"), nullable=True
+    )
+    created_at = Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    default_category = relationship("Category")
+    fields = relationship(
+        "ObligationImportFormatField",
+        back_populates="obligation_import_format",
+        cascade="all, delete-orphan",
+    )
+
+    def __str__(self):
+        return self.name
+
+
+class ObligationImportFormatField(Base):
+    """One column mapping: a target obligation field <- a source column name."""
+
+    __tablename__ = "obligation_import_format_field"
+
+    obligation_import_format_field_id = Column(
+        "obligation_import_format_field_id", Integer, primary_key=True, autoincrement=True
+    )
+    obligation_import_format_id = Column(
+        "obligation_import_format_id",
+        Integer,
+        ForeignKey("obligation_import_format.obligation_import_format_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # name | amount | due_date | period | category | payee | recurrence | is_recurring | paid | direction | note
+    target_field = Column("target_field", String(30), nullable=False)
+    source_column = Column("source_column", String(255), nullable=True)
+
+    obligation_import_format = relationship("ObligationImportFormat", back_populates="fields")
+
+    def __str__(self):
+        return f"{self.target_field} <- {self.source_column}"
+
+
+class ObligationGroup(Base):
+    """A reusable recurring-bill template ("Aluguel", Housing:Rent, payable,
+    monthly, due the 15th) that separate Obligation rows can link to.
+
+    Exists because re-importing the same recurring bill months apart (e.g.
+    next year's spreadsheet) creates a NEW Obligation each time (one per
+    import batch) rather than merging into the original -- a group lets those
+    separate Obligations share one canonical name/category/direction/cadence
+    without forcing them into a single Obligation/Occurrence tree. Editing a
+    group does NOT cascade to already-linked Obligations (they keep whatever
+    they had, possibly hand-customized) -- see the explicit `/sync/` endpoint
+    for pushing the group's current settings down on demand.
+    """
+
+    __tablename__ = "obligation_group"
+
+    obligation_group_id = Column("obligation_group_id", Integer, primary_key=True, autoincrement=True)
+    name = Column("name", String(255), nullable=False, index=True)
+    category_id = Column("category_id", Integer, ForeignKey("category.category_id"), nullable=True)
+    direction = Column("direction", String(10), default="payable", nullable=False)
+    recurrence = Column("recurrence", String(10), nullable=True)  # weekly | monthly | yearly
+    # Informational expected-payment-date, one or the other depending on
+    # recurrence -- not currently used to compute occurrence due dates.
+    expected_day_of_month = Column("expected_day_of_month", Integer, nullable=True)  # 1-31
+    expected_weekday = Column("expected_weekday", String(10), nullable=True)  # monday..sunday
+    created_at = Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    category = relationship("Category")
+    obligations = relationship("Obligation", back_populates="group")
+
+    def __str__(self):
+        return self.name
+
+
+class Obligation(Base):
+    """A recurring or one-off bill/obligation definition.
+
+    Not a ledger row: never touches Transaction or reports. estimated_amount is
+    a budgeted default; actual coverage is tracked by linking existing
+    transactions onto its occurrences (see ObligationOccurrence /
+    ObligationOccurrenceTransaction), independently of the manual `paid` flag.
+    """
+
+    __tablename__ = "obligation"
+
+    obligation_id = Column("obligation_id", Integer, primary_key=True, autoincrement=True)
+    name = Column("name", String(255), nullable=False, index=True)
+    category_id = Column("category_id", Integer, ForeignKey("category.category_id"), nullable=True)
+    payee_id = Column("payee_id", Integer, ForeignKey("payee.payee_id"), nullable=True)
+    obligation_group_id = Column(
+        "obligation_group_id", Integer, ForeignKey("obligation_group.obligation_group_id"), nullable=True
+    )
+    is_recurring = Column("is_recurring", Boolean, default=False, nullable=False)
+    recurrence = Column("recurrence", String(10), nullable=True)  # weekly | monthly | yearly
+    estimated_amount = Column("estimated_amount", Float, nullable=True)
+    # payable (a bill -- covered by outgoing/negative transactions) | receivable
+    # (income -- covered by incoming/positive transactions). Drives matching
+    # (see obligation_match.find_candidate_transactions) and status wording.
+    direction = Column("direction", String(10), default="payable", nullable=False)
+    note = Column("note", Text, nullable=True)
+    is_active = Column("is_active", Boolean, default=True, nullable=False)
+    source = Column("source", String(20), default="manual", nullable=False)  # manual | import
+    created_via_format_id = Column(
+        "created_via_format_id",
+        Integer,
+        ForeignKey("obligation_import_format.obligation_import_format_id"),
+        nullable=True,
+    )
+    is_blocked = Column("is_blocked", Boolean, default=False, nullable=False)
+    blocked_reason = Column("blocked_reason", Text, nullable=True)
+    duplicate_of_obligation_id = Column(
+        "duplicate_of_obligation_id", Integer, ForeignKey("obligation.obligation_id"), nullable=True
+    )
+    created_at = Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    category = relationship("Category")
+    payee = relationship("Payee")
+    group = relationship("ObligationGroup", back_populates="obligations")
+    duplicate_of = relationship("Obligation", remote_side=[obligation_id])
+    created_via_format = relationship("ObligationImportFormat")
+    occurrences = relationship(
+        "ObligationOccurrence",
+        back_populates="obligation",
+        cascade="all, delete-orphan",
+        order_by="ObligationOccurrence.due_date",
+    )
+
+    def __str__(self):
+        return self.name
+
+
+class ObligationOccurrence(Base):
+    """One period instance of an Obligation: its due date, estimate and paid flag.
+
+    A one-off (non-recurring) Obligation just has a single occurrence.
+    """
+
+    __tablename__ = "obligation_occurrence"
+
+    obligation_occurrence_id = Column(
+        "obligation_occurrence_id", Integer, primary_key=True, autoincrement=True
+    )
+    obligation_id = Column(
+        "obligation_id", Integer, ForeignKey("obligation.obligation_id"), nullable=False, index=True
+    )
+    due_date = Column("due_date", Date, nullable=True, index=True)
+    # "YYYY-MM" bucket, independent of due_date (can exist even when the exact
+    # day isn't known yet) -- defaults to due_date's month when left unset.
+    period = Column("period", String(7), nullable=True, index=True)
+    # Falls back to obligation.estimated_amount when null.
+    estimated_amount = Column("estimated_amount", Float, nullable=True)
+    # Fully independent manual toggle: assigning/unassigning transactions never
+    # changes this, and it may be true with zero assigned transactions (e.g.
+    # paid in cash) or false while fully covered.
+    paid = Column("paid", Boolean, default=False, nullable=False)
+    paid_at = Column("paid_at", DateTime(timezone=True), nullable=True)
+    # The business/calendar date it was actually paid or received -- distinct
+    # from paid_at (a record-keeping timestamp). Defaults to due_date when
+    # marked paid (import or manual) since that's the best guess absent a
+    # real one, but is always independently editable afterward.
+    paid_date = Column("paid_date", Date, nullable=True)
+    note = Column("note", Text, nullable=True)
+    source = Column("source", String(20), default="manual", nullable=False)  # manual | import | generated
+    created_via_format_id = Column(
+        "created_via_format_id",
+        Integer,
+        ForeignKey("obligation_import_format.obligation_import_format_id"),
+        nullable=True,
+    )
+    is_blocked = Column("is_blocked", Boolean, default=False, nullable=False)
+    blocked_reason = Column("blocked_reason", Text, nullable=True)
+    duplicate_of_occurrence_id = Column(
+        "duplicate_of_occurrence_id",
+        Integer,
+        ForeignKey("obligation_occurrence.obligation_occurrence_id"),
+        nullable=True,
+    )
+    created_at = Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    obligation = relationship("Obligation", back_populates="occurrences")
+    duplicate_of = relationship("ObligationOccurrence", remote_side=[obligation_occurrence_id])
+    created_via_format = relationship("ObligationImportFormat")
+    assignment_links = relationship(
+        "ObligationOccurrenceTransaction",
+        back_populates="occurrence",
+        cascade="all, delete-orphan",
+    )
+    transactions = relationship(
+        "Transaction", secondary="obligation_occurrence_transaction", viewonly=True
+    )
+
+    def __str__(self):
+        return f"ObligationOccurrence {self.obligation_occurrence_id} ({self.due_date})"
+
+
+class ObligationOccurrenceTransaction(Base):
+    """Links an existing ledger Transaction as (partial) coverage of an occurrence.
+
+    transaction_id is unique: a transaction covers at most one occurrence at a
+    time (many transactions -> one occurrence is the supported direction, e.g.
+    a bill paid across several partial payments). Never mutates Transaction.
+    """
+
+    __tablename__ = "obligation_occurrence_transaction"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    obligation_occurrence_id = Column(
+        "obligation_occurrence_id",
+        Integer,
+        ForeignKey("obligation_occurrence.obligation_occurrence_id"),
+        nullable=False,
+    )
+    transaction_id = Column(
+        "transaction_id", Integer, ForeignKey("transaction.transaction_id"), nullable=False, unique=True
+    )
+    created_at = Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    occurrence = relationship("ObligationOccurrence", back_populates="assignment_links")
+    transaction = relationship("Transaction")
 

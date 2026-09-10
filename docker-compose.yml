@@ -23,13 +23,17 @@ services:
       dockerfile: Dockerfile
     container_name: finance-backend
     environment:
-      POSTGRESQL_URL: postgresql://finance:<yourpassworsecure>:5432/finance
+      # substitute `Lem0n4de-` by the password defined in POSTGRES_PASSWORD
+      POSTGRESQL_URL: postgresql://finance:Lem0n4de-@db:5432/finance
       SECRET_KEY: django-insecure-your-super-secret-key-here-change-this-in-production-123456789
       ALLOWED_HOSTS: "*"
       CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:8000"
       LOG_LEVEL: INFO
-      CURRENCY_URL: https://api.currencyfreaks.com/v2.0/rates/latest
-      CURRRENCY_API: 
+      # Currency and AI-provider settings (CURRENCY_URL, CURRRENCY_API,
+      # AI_PROVIDER, ANTHROPIC_*, GEMINI_*) are intentionally NOT set here.
+      # They're editable at runtime from Settings > API Configuration, which
+      # writes to backend/.env.local — a container env var here would always
+      # take precedence over that file and silently discard saved settings.
     ports:
       - "8000:8000"
     depends_on:

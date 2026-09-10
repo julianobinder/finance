@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
+import { useDisplaySettings } from '@/contexts/DisplaySettingsContext';
 
 interface Account {
   account_id: number;
@@ -51,6 +52,7 @@ interface AccountModalProps {
 }
 
 export function AccountModal({ account, lookupData, onClose, onSave }: AccountModalProps) {
+  const { defaultCurrencyId } = useDisplaySettings();
   const [formData, setFormData] = useState<Partial<Account>>({
     name: '',
     titular_id: 0,
@@ -101,6 +103,21 @@ export function AccountModal({ account, lookupData, onClose, onSave }: AccountMo
       });
     }
   }, [account]);
+
+  // Default new accounts to the configured default currency (Settings >
+  // Display Defaults), falling back to BRL when none is set.
+  useEffect(() => {
+    const currencies = lookupData?.currencies;
+    if (!account && currencies && currencies.length > 0) {
+      setFormData(prev => {
+        if (prev.currency_id) return prev;
+        const preferred = defaultCurrencyId
+          ? currencies.find((c: any) => c.currency_id === defaultCurrencyId)
+          : currencies.find((c: any) => c.iso_code === 'BRL');
+        return { ...prev, currency_id: preferred?.currency_id || prev.currency_id };
+      });
+    }
+  }, [account, lookupData, defaultCurrencyId]);
 
   const handleInputChange = (field: keyof Account, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));

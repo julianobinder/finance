@@ -4,17 +4,18 @@ import { NavigationState, NavigationContextType, MenuItem } from '@/types/naviga
 // Initial menu items configuration
 const initialMenuItems: MenuItem[] = [
   { id: 'home', label: 'Home', path: '/', icon: 'Home' },
+  { id: 'reports', label: 'Reports', path: '/reports', icon: 'BarChart2' },
   { id: 'accounts', label: 'Accounts', path: '/accounts', icon: 'CreditCard' },
+  { id: 'obligations', label: 'Obligations', path: '/obligations', icon: 'ClipboardCheck' },
   { id: 'csv-templates', label: 'CSV Templates', path: '/csv-templates', icon: 'FileText' },
   { id: 'csv-import-plan', label: 'CSV Import Plan', path: '/import-plans', icon: 'Upload' },
+  { id: 'categories', label: 'Categories', path: '/categories', icon: 'Grid3X3' },
   { id: 'account-types', label: 'Account Types', path: '/account-types', icon: 'Tag' },
   { id: 'account-holders', label: 'Account Holders', path: '/account-holders', icon: 'Users' },
+  { id: 'account-groups', label: 'Account Groups', path: '/account-groups', icon: 'Folder' },
   { id: 'currencies', label: 'Currencies', path: '/currencies', icon: 'DollarSign' },
   { id: 'titulars', label: 'Titulars', path: '/titulars', icon: 'User' },
-  { id: 'account-groups', label: 'Account Groups', path: '/account-groups', icon: 'Folder' },
-  { id: 'categories', label: 'Categories', path: '/categories', icon: 'Grid3X3' },
   { id: 'payees', label: 'Payees', path: '/payees', icon: 'Building' },
-  { id: 'reports', label: 'Reports', path: '/reports', icon: 'BarChart2' },
   { id: 'settings', label: 'Settings', path: '/settings', icon: 'Settings' },
 ];
 

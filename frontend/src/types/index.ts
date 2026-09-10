@@ -71,3 +71,89 @@ export interface Payee {
   payee_id: number;
   name: string;
 }
+
+export type ObligationDirection = 'payable' | 'receivable';
+
+export interface ObligationOccurrence {
+  obligation_occurrence_id: number;
+  obligation_id: number;
+  obligation_name: string;
+  due_date: string | null;
+  period: string | null;
+  estimated_amount: number | null;
+  paid: boolean;
+  paid_at: string | null;
+  paid_date: string | null;
+  note: string | null;
+  is_blocked: boolean;
+  blocked_reason: string | null;
+  duplicate_of_occurrence_id: number | null;
+  source: string;
+  created_at: string;
+  assigned_total: number;
+  assigned_transaction_count: number;
+  category_id: number | null;
+  category_name: string | null;
+  payee_id: number | null;
+  payee_name: string | null;
+  direction: ObligationDirection;
+}
+
+export interface Obligation {
+  obligation_id: number;
+  name: string;
+  category_id: number | null;
+  category_name: string | null;
+  payee_id: number | null;
+  payee_name: string | null;
+  obligation_group_id: number | null;
+  obligation_group_name: string | null;
+  is_recurring: boolean;
+  recurrence: string | null;
+  estimated_amount: number | null;
+  direction: ObligationDirection;
+  note: string | null;
+  is_active: boolean;
+  is_blocked: boolean;
+  blocked_reason: string | null;
+  duplicate_of_obligation_id: number | null;
+  duplicate_of_obligation_name: string | null;
+  source: string;
+  created_at: string;
+  occurrence_count: number;
+  open_occurrence_count: number;
+  next_due_date: string | null;
+  occurrences?: ObligationOccurrence[];
+}
+
+export interface ObligationGroup {
+  obligation_group_id: number;
+  name: string;
+  category_id: number | null;
+  category_name: string | null;
+  direction: ObligationDirection;
+  recurrence: string | null;
+  expected_day_of_month: number | null;
+  expected_weekday: string | null;
+  created_at: string;
+  obligation_count: number;
+}
+
+export interface ObligationImportFormatField {
+  obligation_import_format_field_id?: number;
+  target_field: string;
+  source_column: string;
+}
+
+export interface ObligationImportFormat {
+  obligation_import_format_id: number;
+  name: string;
+  file_type: string;
+  sheet_name: string | null;
+  header_row: number;
+  date_format: string | null;
+  decimal_separator: string;
+  default_recurrence: string | null;
+  default_category_id: number | null;
+  fields: ObligationImportFormatField[];
+}

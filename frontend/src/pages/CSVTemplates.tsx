@@ -32,7 +32,9 @@ interface CSVTemplate {
 
 const MAP_OPTIONS = [
   { value: 'NONE', label: '-- Select Map --' },
+  { value: 'DATE', label: 'DATE' },
   { value: 'CASH_DATE', label: 'CASH_DATE' },
+  { value: 'PAYMENT_DATE', label: 'PAYMENT_DATE' },
   { value: 'PAID_DATE', label: 'PAID_DATE' },
   { value: 'PAYEE_DESC', label: 'PAYEE_DESC' },
   { value: 'COMMENTS', label: 'COMMENTS' },

@@ -403,11 +403,9 @@ export function TransactionModal({
   
   const handleFinish = async () => {
       if (isSubmitting || lookupsLoading) return;
-      // Validation
-      if (transactionType !== 'transfer' && !formData.payeeId) {
-        showError('Please select or create a payee_id');
-        return;
-      }
+      // Validation. Payee is intentionally not required — payee_id is
+      // nullable on the transaction, same as a transfer already saves with
+      // no payee.
       if (transactionType !== 'transfer' && !isSplit && !formData.categoryId) {
         showError('Please select a category_id');
         return;
@@ -618,6 +616,7 @@ export function TransactionModal({
                     <label className="block text-sm font-medium mb-1">Payee</label>
                     <Select
                       filterable
+                      hasClear
                       placeholder="Select or type payee_id"
                       value={formData.payeeId ? [formData.payeeId] : []}
                       onUpdate={handlePayeeUpdate}

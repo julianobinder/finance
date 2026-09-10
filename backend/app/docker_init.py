@@ -1,9 +1,7 @@
 import time
 import logging
-from sqlalchemy import inspect
-from app.database import engine, SessionLocal
-from app.models import Base
-from app.db_reinit import seed_default_lookups
+from app.database import engine
+from app.db_migrate import ensure_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("docker_init")
@@ -26,26 +24,14 @@ def wait_for_db():
 def init_db():
     logger.info("Initializing database checks...")
     wait_for_db()
-    
-    db = SessionLocal()
     try:
-        inspector = inspect(engine)
-        # Check if the primary 'status' lookup table exists
-        if not inspector.has_table("status"):
-            logger.info("Tables not found. Generating schema from SQLAlchemy metadata...")
-            Base.metadata.create_all(bind=engine)
-            logger.info("Schema generated. Seeding standard system lookup data...")
-            seed_default_lookups(db)
-            db.commit()
-            logger.info("Database schema creation and seeding finalized successfully.")
-        else:
-            logger.info("Database tables detected. Skipping schema generation and seeding.")
+        # Alembic-managed: builds/migrates the schema and seeds base data.
+        # Adopts a legacy pre-Alembic database without touching existing rows.
+        ensure_schema()
+        logger.info("Database schema/migrations finalized successfully.")
     except Exception as e:
-        logger.error(f"Critical error during database schema validation/seeding: {e}")
-        db.rollback()
+        logger.error(f"Critical error during database schema validation/migration: {e}")
         raise
-    finally:
-        db.close()
 
 if __name__ == "__main__":
     init_db()

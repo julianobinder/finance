@@ -14,7 +14,8 @@ import {
   Building,
   Menu,
   Settings,
-  BarChart2
+  BarChart2,
+  ClipboardCheck
 } from 'lucide-react';
 import { Sidebar as SidebarUI, SidebarHeader, SidebarContent } from '@/components/ui/sidebar';
 import { NavigationMenu, NavigationMenuItem, NavigationMenuLink } from '@/components/ui/navigation-menu';
@@ -35,6 +36,7 @@ const iconMap = {
   Building,
   Settings,
   BarChart2,
+  ClipboardCheck,
 };
 
 export function Sidebar() {

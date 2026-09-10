@@ -227,3 +227,32 @@ def analyze_csv_headers(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
         )
+
+
+@router.post("/parse-statement/")
+def parse_statement_upload(
+    file: UploadFile = File(...),
+    format: Optional[str] = Query(None, description="Force a parser instead of auto-detect"),
+):
+    """Normalize a bank statement export into ``{headers, rows}``.
+
+    Accepts Nubank CSV, Santander current ``.xls`` and Santander PDF
+    statements, auto-detecting the format from the file contents. The
+    returned table uses canonical column names that match the seeded
+    import templates, so the client import pipeline consumes it exactly
+    like a plain CSV. Amounts are normalized to signed dot-decimal.
+    """
+    from app.statement_parser import StatementParseError, parse_statement
+
+    content = file.file.read()
+    try:
+        return parse_statement(file.filename, content, fmt=format)
+    except StatementParseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        )
+    except Exception as e:  # pragma: no cover - unexpected parser failure
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to parse statement: {e}",
+        )

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Button, Dialog, TextInput, Checkbox } from '@gravity-ui/uikit';
-import { ChevronRight, ChevronDown, Folder, FolderOpen, Plus, Edit2, Trash2, GitMerge } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, FolderOpen, Plus, Edit2, Trash2, GitMerge, Undo2, Eye, EyeOff } from 'lucide-react';
 import { showError, showSuccess, showConfirmDelete, showConfirm } from '@/utils/notifications';
 
 type Category = {
@@ -9,7 +9,23 @@ type Category = {
   name: string;
   parent_category_id: number | null;
   is_hidden: boolean;
+  merged_into_category_id: number | null;
+  merged_into_category_name: string | null;
+  related_count: number;
 };
+
+const RelatedBadge = ({ count }: { count: number }) => (
+  <span
+    className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+      count === 0
+        ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+        : 'bg-muted text-muted-foreground'
+    }`}
+    title={count === 0 ? 'No related records — safe to delete' : `${count} related record(s) — delete is blocked until this reaches 0`}
+  >
+    {count}
+  </span>
+);
 
 export function Categories() {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -25,13 +41,14 @@ export function Categories() {
   const [expandedParents, setExpandedParents] = useState<Record<number, boolean>>({});
   const [dragOverParentId, setDragOverParentId] = useState<number | null>(null);
   const [mergeSource, setMergeSource] = useState<Category | null>(null);
+  const [showAliases, setShowAliases] = useState(false);
 
   const handleMerge = async (target: Category) => {
     if (!mergeSource) return;
 
     const confirmed = await showConfirm({
       title: 'Confirm Sub-category Merge',
-      content: `Are you sure you want to merge all transactions from "${mergeSource.name}" into "${target.name}"? "${mergeSource.name}" will be permanently deleted. This action cannot be undone.`,
+      content: `Mark "${mergeSource.name}" as an alias of "${target.name}"? "${mergeSource.name}" is kept (not deleted) so import rules can keep matching it, but new transactions and reports will roll up under "${target.name}". You can undo this anytime.`,
     });
 
     if (!confirmed) return;
@@ -46,15 +63,35 @@ export function Categories() {
       });
 
       if (response.ok) {
-        showSuccess(`Successfully merged "${mergeSource.name}" into "${target.name}"`);
+        showSuccess(`"${mergeSource.name}" now maps to "${target.name}"`);
         setMergeSource(null);
         await fetchAllCategories();
       } else {
         const err = await response.json();
-        showError('Failed to merge sub-categories', typeof err === 'string' ? err : JSON.stringify(err));
+        showError('Failed to merge sub-categories', typeof err === 'string' ? err : (err.detail || JSON.stringify(err)));
       }
     } catch (error) {
       showError('Failed to merge sub-categories', error instanceof Error ? error.message : 'Unknown error');
+    }
+  };
+
+  const handleUnmerge = async (cat: Category) => {
+    const confirmed = await showConfirm({
+      title: 'Undo Merge',
+      content: `Detach "${cat.name}" from "${cat.merged_into_category_name}"? It will become a standalone sub-category again.`,
+    });
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`${API}${cat.category_id}/unmerge/`, { method: 'POST' });
+      if (response.ok) {
+        showSuccess(`"${cat.name}" is standalone again`);
+        await fetchAllCategories();
+      } else {
+        showError('Failed to undo merge');
+      }
+    } catch (error) {
+      showError('Failed to undo merge', error instanceof Error ? error.message : 'Unknown error');
     }
   };
 
@@ -127,11 +164,20 @@ export function Categories() {
     fetchAllCategories();
   }, []);
 
+  const aliasSubCategoryCount = useMemo(
+    () => categories.filter((c) => c.parent_category_id !== null && c.merged_into_category_id).length,
+    [categories]
+  );
+
   const { rootCategories, subCategoriesMap } = useMemo(() => {
     const roots = categories.filter((c) => c.parent_category_id === null);
     const subMap: Record<number, Category[]> = {};
     categories.forEach((c) => {
       if (c.parent_category_id !== null) {
+        // Aliases are collapsed by default (toggle via "Show Aliases") so the
+        // tree isn't cluttered with old bank-statement spellings that are
+        // kept only for import-rule/AI matching, not day-to-day use.
+        if (!showAliases && c.merged_into_category_id) return;
         if (!subMap[c.parent_category_id]) {
           subMap[c.parent_category_id] = [];
         }
@@ -145,7 +191,7 @@ export function Categories() {
     });
 
     return { rootCategories: roots, subCategoriesMap: subMap };
-  }, [categories]);
+  }, [categories, showAliases]);
 
   const toggleParent = (pId: number) => {
     setExpandedParents((prev) => ({ ...prev, [pId]: !prev[pId] }));
@@ -278,7 +324,9 @@ export function Categories() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Categories</h1>
-          <p className="text-muted-foreground text-sm">TreeView based hierarchy for categories and sub-categories.</p>
+          <p className="text-muted-foreground text-sm">
+            TreeView based hierarchy for categories and sub-categories. Merge lets you alias a duplicate sub-category to an "official" one — the original is kept, not deleted, so import rules can still match it.
+          </p>
         </div>
       </div>
 
@@ -289,7 +337,7 @@ export function Categories() {
             <div>
               <p className="font-semibold text-yellow-800 dark:text-yellow-250">Merge Mode Active</p>
               <p className="text-sm text-yellow-700/80 dark:text-yellow-350/80">
-                Merging transactions from <strong>"{mergeSource.name}"</strong>. Click <strong>"Merge Into"</strong> on another sub-category to choose the target.
+                Aliasing <strong>"{mergeSource.name}"</strong>. Click <strong>"Merge Into"</strong> on the sub-category it should map to.
               </p>
             </div>
           </div>
@@ -303,6 +351,10 @@ export function Categories() {
         <Button view="action" disabled={!!mergeSource} onClick={() => openModal(null, false)}>
           <Plus className="mr-2 h-4 w-4" />
           New Category
+        </Button>
+        <Button onClick={() => setShowAliases((v) => !v)}>
+          {showAliases ? <EyeOff className="mr-2 h-4 w-4" /> : <Eye className="mr-2 h-4 w-4" />}
+          {showAliases ? 'Hide' : 'Show'} Aliases{aliasSubCategoryCount > 0 ? ` (${aliasSubCategoryCount})` : ''}
         </Button>
         <Button onClick={expandAll}>Expand All</Button>
         <Button onClick={collapseAll}>Collapse All</Button>
@@ -319,34 +371,41 @@ export function Categories() {
               <th className="py-1 px-3 text-base font-bold text-black w-24">ID</th>
               <th className="py-1 px-3 text-base font-bold text-black">Name</th>
               <th className="py-1 px-3 text-base font-bold text-black w-28 text-center">Hidden</th>
+              <th className="py-1 px-3 text-base font-bold text-black w-28 text-center" title="Transactions, import rules, and aliases referencing this category — delete is blocked until this reaches 0">Related</th>
               <th className="py-1 px-3 text-base font-bold text-black w-40 text-center">Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading && categories.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-muted-foreground">
+                <td colSpan={6} className="py-8 text-center text-muted-foreground">
                   Loading categories...
                 </td>
               </tr>
             ) : filteredTree.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-muted-foreground">
+                <td colSpan={6} className="py-8 text-center text-muted-foreground">
                   No categories found.
                 </td>
               </tr>
             ) : (
-              filteredTree.map(({ parent, subCategories }) => {
+              (() => {
+                // Running index across parent + visible sub-category rows so
+                // the zebra stripe flows continuously down the table instead
+                // of resetting for each parent's group.
+                let rowCounter = 0;
+                return filteredTree.map(({ parent, subCategories }) => {
                 const isExpanded = isParentExpanded(parent.category_id);
                 const hasSubs = subCategories.length > 0;
                 const isSelected = selectedParentId === parent.category_id;
+                const parentStripe = rowCounter++ % 2 === 1;
 
                 return (
                   <React.Fragment key={parent.category_id}>
                     {/* Parent Row */}
-                    <tr 
+                    <tr
                       className={`g-table__row border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer ${
-                        isSelected ? 'bg-primary/5 dark:bg-primary/10' : ''
+                        isSelected ? 'bg-primary/5 dark:bg-primary/10' : parentStripe ? 'bg-muted/40' : ''
                       } ${
                         dragOverParentId === parent.category_id ? 'drag-over-row' : ''
                       }`}
@@ -390,12 +449,15 @@ export function Categories() {
                           <span className="text-muted-foreground">No</span>
                         )}
                       </td>
+                      <td className="py-1 px-3 text-center">
+                        <RelatedBadge count={parent.related_count} />
+                      </td>
                       <td className="py-1 px-3">
                         <div className="flex justify-center space-x-1 min-h-[28px]">
                           {!mergeSource && (
                             <>
-                              <Button 
-                                view="flat" 
+                              <Button
+                                view="flat"
                                 className="add-sub-btn"
                                 title="Add Sub-category" 
                                 onClick={(e) => { 
@@ -433,10 +495,13 @@ export function Categories() {
 
                     {/* Subcategories (Children) */}
                     {isExpanded && subCategories.map((sub) => {
+                      const isAlias = !!sub.merged_into_category_id;
+                      const subStripe = rowCounter++ % 2 === 1;
                       return (
-                        <tr 
+                        <tr
                           key={sub.category_id}
-                          className="g-table__row border-b border-border/30 hover:bg-muted/10 transition-colors bg-muted/5 cursor-grab active:cursor-grabbing"
+                          className={`g-table__row border-b border-border/30 hover:bg-muted/10 transition-colors ${subStripe ? 'bg-muted/25' : 'bg-muted/5'} cursor-grab active:cursor-grabbing`}
+                          style={{ opacity: isAlias ? 0.7 : 1 }}
                           draggable={true}
                           onDragStart={(e) => handleDragStart(e, sub.category_id)}
                           onDragOver={(e) => {
@@ -454,7 +519,13 @@ export function Categories() {
                           <td className="py-1 px-3">
                             <div className="flex items-center pl-4">
                               <div className="w-4 h-5 border-l border-b border-border/80 -mt-2.5 mr-2 rounded-bl-md shrink-0" />
-                              <span className="text-foreground/90 font-medium text-sm">{sub.name}</span>
+                              <span className="text-foreground/90 font-medium text-sm">
+                                {isAlias && <span className="text-muted-foreground mr-1">↳</span>}
+                                {sub.name}
+                              </span>
+                              {isAlias && (
+                                <span className="text-xs text-muted-foreground ml-2">→ {sub.merged_into_category_name}</span>
+                              )}
                             </div>
                           </td>
                           <td className="py-1 px-3 text-center text-sm">
@@ -464,6 +535,9 @@ export function Categories() {
                               <span className="text-muted-foreground">No</span>
                             )}
                           </td>
+                          <td className="py-1 px-3 text-center">
+                            <RelatedBadge count={sub.related_count} />
+                          </td>
                           <td className="py-1 px-3">
                             <div className="flex justify-center space-x-1 items-center min-h-[28px]">
                               {mergeSource ? (
@@ -472,13 +546,13 @@ export function Categories() {
                                     Source
                                   </span>
                                 ) : (
-                                  <Button 
-                                    view="flat" 
+                                  <Button
+                                    view="flat"
                                     className="merge-target-btn"
                                     title="Merge Into"
-                                    onClick={(e) => { 
-                                      e.stopPropagation(); 
-                                      handleMerge(sub); 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMerge(sub);
                                     }}
                                   >
                                     <GitMerge className="h-4 w-4 text-green-600" />
@@ -486,32 +560,43 @@ export function Categories() {
                                 )
                               ) : (
                                 <>
-                                  <Button 
-                                    view="flat" 
-                                    className="merge-btn"
-                                    title="Merge sub-category"
-                                    onClick={(e) => { 
-                                      e.stopPropagation(); 
-                                      setMergeSource(sub); 
-                                    }}
-                                  >
-                                    <GitMerge className="h-4 w-4 text-blue-600" />
-                                  </Button>
-                                  <Button 
-                                    view="flat" 
+                                  {isAlias ? (
+                                    <Button
+                                      view="flat"
+                                      className="unmerge-btn"
+                                      title="Undo merge"
+                                      onClick={(e) => { e.stopPropagation(); handleUnmerge(sub); }}
+                                    >
+                                      <Undo2 className="h-4 w-4 text-amber-600" />
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      view="flat"
+                                      className="merge-btn"
+                                      title="Merge sub-category"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMergeSource(sub);
+                                      }}
+                                    >
+                                      <GitMerge className="h-4 w-4 text-blue-600" />
+                                    </Button>
+                                  )}
+                                  <Button
+                                    view="flat"
                                     className="edit-btn"
-                                    onClick={(e) => { 
-                                      e.stopPropagation(); 
-                                      openModal(sub, true); 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openModal(sub, true);
                                     }}
                                   >
                                     <Edit2 className="h-4 w-4" />
                                   </Button>
-                                  <Button 
-                                    view="flat-danger" 
+                                  <Button
+                                    view="flat-danger"
                                     className="delete-btn"
-                                    onClick={(e) => { 
-                                      e.stopPropagation(); 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
                                       handleDelete(sub); 
                                     }}
                                   >
@@ -526,7 +611,8 @@ export function Categories() {
                     })}
                   </React.Fragment>
                 );
-              })
+              });
+              })()
             )}
           </tbody>
         </table>

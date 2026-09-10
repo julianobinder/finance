@@ -1,0 +1,13 @@
+EXTRATO DE CONTA CORRENTE ,,,,,,
+,,,,,,
+FULANO DE TAL , , , ,Conta: 0000-00.000000.0, ,
+,,,,,,
+Tipo de Lancamento: Todos, , , ,Extrato de 01/01/2026 a 31/01/2026 , ,
+Data ,Descrição ,Docto ,Situação ,Crédito (R$) ,Débito (R$) ,Saldo (R$)
+16/01/2026 ,PAGAMENTO DE BOLETO OUTROS BANCOS  EMPRESA EXEMPLO,000002,,," -250,50 "," 749,50 "
+15/01/2026 ,PIX RECEBIDO  FULANO DE TAL,000001,," 1.000,00 ",," 1.000,00 "
+01/01/2026,SALDO ANTERIOR , , , , ," 0,00 "
+TOTAL , , , ," 1.000,00 "," -250,50 ",
+,,,,,,
+Saldo de Conta a 31/01/2026 em R$ , ,,,,,
+Saldo de conta corrente, ,"  749,50 ",,,,

@@ -6,6 +6,7 @@ import { AccountModal } from '@/components/Account/AccountModal';
 import { showError, showSuccess, showConfirmDelete } from '@/utils/notifications';
 import { TableColumnConfig } from '@gravity-ui/uikit';
 import { Table } from '@/components/ui/gravity-table';
+import { useDisplaySettings } from '@/contexts/DisplaySettingsContext';
 interface Account {
   account_id: number;
   name: string;
@@ -42,6 +43,7 @@ interface LookupData {
 }
 
 export function Accounts() {
+  const { defaultLocale } = useDisplaySettings();
   const navigate = useNavigate();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [lookupData, setLookupData] = useState<LookupData | null>(null);
@@ -311,7 +313,7 @@ export function Accounts() {
                     {(() => {
                       const date = new Date(account.entry);
                       if (isNaN(date.getTime())) return account.entry;
-                      return date.toLocaleDateString('en-US', {
+                      return date.toLocaleDateString(defaultLocale, {
                         timeZone: 'UTC',
                         year: 'numeric',
                         month: 'short',

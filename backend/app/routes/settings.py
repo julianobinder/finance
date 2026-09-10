@@ -247,6 +247,22 @@ def restore_database(file: UploadFile = File(...), db: Session = Depends(get_db)
             if dump_path and os.path.exists(dump_path):
                 os.unlink(dump_path)
 
+            # Reconcile Alembic state + base reference data for legacy backups
+            # (dumps taken before Alembic / import templates existed).
+            try:
+                from sqlalchemy import inspect as _inspect
+                from app.database import SessionLocal as _SessionLocal, engine as _engine
+                from app.db_migrate import stamp_head
+                from app.seed_import_templates import seed_import_templates
+
+                if not _inspect(_engine).has_table("alembic_version"):
+                    stamp_head()
+                with _SessionLocal() as _s:
+                    seed_import_templates(_s)
+                    _s.commit()
+            except Exception as reconcile_err:  # non-fatal
+                print(f"Post-restore reconcile warning: {reconcile_err}")
+
             return {"message": "Database restored successfully."}
 
         except subprocess.CalledProcessError as e:
@@ -299,6 +315,9 @@ def load_empty_database(db: Session = Depends(get_db)):
         create_all_tables(db)
         seed_default_lookups(db)
         db.commit()
+        # Re-created schema is at the latest revision; record it so Alembic stays consistent.
+        from app.db_migrate import stamp_head
+        stamp_head()
         return {"message": "Empty database loaded successfully."}
     except SQLAlchemyError as e:
         db.rollback()
@@ -310,12 +329,34 @@ def load_empty_database(db: Session = Depends(get_db)):
 
 @router.get("/config/")
 def get_config():
-    """Retrieve external integration configuration settings."""
+    """Retrieve external integration configuration settings (currency + AI provider)."""
     from app.config import settings as app_settings
     return {
         "currency_url": app_settings.currency_url,
         "currrency_api": app_settings.currrency_api,
+        "ai_provider": app_settings.ai_provider,
+        "anthropic_api_key": app_settings.anthropic_api_key,
+        "anthropic_model": app_settings.anthropic_model,
+        "gemini_api_key": app_settings.gemini_api_key,
+        "gemini_model": app_settings.gemini_model,
+        "default_currency_id": app_settings.default_currency_id,
+        "default_locale": app_settings.default_locale,
     }
+
+
+# Maps each SettingsConfigUpdate field to its .env.local key. Kept in one
+# place so GET/POST and env-file rewriting can't drift out of sync.
+_CONFIG_ENV_KEYS = {
+    "currency_url": "CURRENCY_URL",
+    "currrency_api": "CURRRENCY_API",
+    "ai_provider": "AI_PROVIDER",
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+    "anthropic_model": "ANTHROPIC_MODEL",
+    "gemini_api_key": "GEMINI_API_KEY",
+    "gemini_model": "GEMINI_MODEL",
+    "default_currency_id": "DEFAULT_CURRENCY_ID",
+    "default_locale": "DEFAULT_LOCALE",
+}
 
 
 @router.post("/config/")
@@ -324,8 +365,9 @@ def update_config(payload: SettingsConfigUpdate):
     import os
     from app.config import settings as app_settings, BASE_DIR
 
-    currency_url = payload.currency_url.strip()
-    currrency_api = payload.currrency_api.strip()
+    values = {
+        field: getattr(payload, field).strip() for field in _CONFIG_ENV_KEYS
+    }
 
     env_path = os.path.join(BASE_DIR, ".env.local")
     try:
@@ -334,31 +376,32 @@ def update_config(payload: SettingsConfigUpdate):
             with open(env_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
+        env_keys = {env_key: field for field, env_key in _CONFIG_ENV_KEYS.items()}
         new_lines = []
-        url_found = False
-        api_found = False
+        found = set()
 
         for line in lines:
-            if line.strip().startswith("CURRENCY_URL="):
-                new_lines.append(f"CURRENCY_URL={currency_url}\n")
-                url_found = True
-            elif line.strip().startswith("CURRRENCY_API="):
-                new_lines.append(f"CURRRENCY_API={currrency_api}\n")
-                api_found = True
+            stripped = line.strip()
+            matched_key = next(
+                (k for k in env_keys if stripped.startswith(f"{k}=")), None
+            )
+            if matched_key:
+                field = env_keys[matched_key]
+                new_lines.append(f"{matched_key}={values[field]}\n")
+                found.add(matched_key)
             else:
                 new_lines.append(line)
 
-        if not url_found:
-            new_lines.append(f"CURRENCY_URL={currency_url}\n")
-        if not api_found:
-            new_lines.append(f"CURRRENCY_API={currrency_api}\n")
+        for field, env_key in _CONFIG_ENV_KEYS.items():
+            if env_key not in found:
+                new_lines.append(f"{env_key}={values[field]}\n")
 
         with open(env_path, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
 
-        # Update in-memory values immediately
-        app_settings.currency_url = currency_url
-        app_settings.currrency_api = currrency_api
+        # Update in-memory values immediately (no restart required)
+        for field, value in values.items():
+            setattr(app_settings, field, value)
 
         return {"message": "Configuration updated successfully."}
     except IOError as e:
@@ -376,6 +419,8 @@ def load_sample_database(db: Session = Depends(get_db)):
 
     try:
         seed_sample_data(db)
+        from app.db_migrate import stamp_head
+        stamp_head()
         return {"message": "Sample database loaded successfully."}
     except SQLAlchemyError as e:
         db.rollback()

@@ -9,6 +9,7 @@ import api from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { useDisplaySettings } from '@/contexts/DisplaySettingsContext';
 
 const CHART_COLORS = [
   '#6366f1', // Indigo
@@ -179,6 +180,7 @@ function MultiselectDropdown({ label, options, selectedIds, onChange, placeholde
 }
 
 export function Reports() {
+  const { defaultLocale } = useDisplaySettings();
   const [transactions, setTransactions] = useState<BI_Transaction[]>([]);
   const [categories, setCategories] = useState<CategoryLookup[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyLookup[]>([]);
@@ -399,7 +401,7 @@ export function Reports() {
           {['GBP', 'EUR', 'USD', 'BRL'].map(cur => {
             const balance = consolidatedBalances[cur] ?? 0;
             const symbol = getCurrencySymbol(cur);
-            const formattedBalance = Math.abs(balance).toLocaleString('en-US', {
+            const formattedBalance = Math.abs(balance).toLocaleString(defaultLocale, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             });
@@ -424,7 +426,7 @@ export function Reports() {
             const isSelected = cur === selectedCurrency;
             const rateText = isSelected 
               ? 'Selected currency'
-              : `1 ${cur} = ${getCurrencySymbol(selectedCurrency)}${rateToSelected.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+              : `1 ${cur} = ${getCurrencySymbol(selectedCurrency)}${rateToSelected.toLocaleString(defaultLocale, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
 
             return (
               <div 
@@ -582,7 +584,7 @@ export function Reports() {
                         );
                       })}
                     </Pie>
-                    <Tooltip formatter={(value, name) => [`${getCurrencySymbol(selectedCurrency)}${Number(value).toLocaleString()}`, name]} />
+                    <Tooltip formatter={(value, name) => [`${getCurrencySymbol(selectedCurrency)}${Number(value).toLocaleString(defaultLocale)}`, name]} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -672,7 +674,7 @@ export function Reports() {
                         );
                       })}
                     </Pie>
-                    <Tooltip formatter={(value, name) => [`${getCurrencySymbol(selectedCurrency)}${Number(value).toLocaleString()}`, name]} />
+                    <Tooltip formatter={(value, name) => [`${getCurrencySymbol(selectedCurrency)}${Number(value).toLocaleString(defaultLocale)}`, name]} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -752,7 +754,7 @@ export function Reports() {
                         />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(value, name) => [`${getCurrencySymbol(selectedCurrency)}${Number(value).toLocaleString()}`, name]} />
+                    <Tooltip formatter={(value, name) => [`${getCurrencySymbol(selectedCurrency)}${Number(value).toLocaleString(defaultLocale)}`, name]} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>

@@ -1,10 +1,12 @@
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, joinedload
+from app.category_utils import resolve_canonical_category_id
 from app.database import get_db
-from app.models import Account, Category, Transaction
+from app.models import Account, Category, Payee, Transaction
+from app.payee_utils import resolve_canonical_payee_id
 
 router = APIRouter()
 
@@ -12,9 +14,13 @@ router = APIRouter()
 @router.get("/{pk}/transactions/")
 def get_account_transactions(
     pk: int,
-    date_filter: Optional[str] = Query(None),
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
+    min_amount: Optional[float] = Query(None, description="Absolute value lower bound"),
+    max_amount: Optional[float] = Query(None, description="Absolute value upper bound"),
+    comment: Optional[str] = Query(None, description="Substring match, case-insensitive"),
+    payee_id: Optional[int] = Query(None, description="Matches this payee and any of its aliases"),
+    category_id: Optional[int] = Query(None, description="Matches this category and any of its aliases"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1),
     db: Session = Depends(get_db),
@@ -63,54 +69,77 @@ def get_account_transactions(
         .filter(Transaction.account_id == pk)
     )
 
-    if date_filter:
-        today = datetime.utcnow().date()
-        if date_filter == "today":
-            query = query.filter(
-                or_(
-                    Transaction.cash == today,
-                    db.and_(Transaction.cash.is_(None), Transaction.entry >= today),
-                )
-            )
-        elif date_filter == "last_30_days":
-            from datetime import timedelta
-
-            start_date = today - timedelta(days=30)
-            query = query.filter(
-                or_(
-                    Transaction.cash >= start_date,
-                    db.and_(
-                        Transaction.cash.is_(None), Transaction.entry >= start_date
-                    ),
-                )
-            )
-        elif date_filter == "this_month":
-            start_date = today.replace(day=1)
-            query = query.filter(
-                or_(
-                    Transaction.cash >= start_date,
-                    db.and_(
-                        Transaction.cash.is_(None), Transaction.entry >= start_date
-                    ),
-                )
-            )
-        elif date_filter == "last_12_months":
-            from datetime import timedelta
-
-            start_date = today - timedelta(days=365)
-            query = query.filter(
-                or_(
-                    Transaction.cash >= start_date,
-                    db.and_(
-                        Transaction.cash.is_(None), Transaction.entry >= start_date
-                    ),
-                )
-            )
-
+    # Effective date is cash-basis (Transaction.cash) when set, else falls
+    # back to the entry date — mirrors the fallback get_tx_key() above uses
+    # for the running balance sort.
     if start_date:
-        query = query.filter(Transaction.cash >= start_date)
+        query = query.filter(
+            or_(
+                Transaction.cash >= start_date,
+                and_(Transaction.cash.is_(None), Transaction.entry >= start_date),
+            )
+        )
     if end_date:
-        query = query.filter(Transaction.cash <= end_date)
+        query = query.filter(
+            or_(
+                Transaction.cash <= end_date,
+                and_(Transaction.cash.is_(None), Transaction.entry <= end_date),
+            )
+        )
+
+    if min_amount is not None:
+        query = query.filter(func.abs(Transaction.amount) >= min_amount)
+    if max_amount is not None:
+        query = query.filter(func.abs(Transaction.amount) <= max_amount)
+
+    if comment:
+        query = query.filter(Transaction.comment.ilike(f"%{comment}%"))
+
+    # Payee/category merge is non-destructive (see payee_utils.py /
+    # category_utils.py) — a transaction may still reference an old alias
+    # id even after it's been merged into a canonical one, so filtering by
+    # either the canonical or an alias must match rows using any of them.
+    if payee_id:
+        root_id = resolve_canonical_payee_id(db, payee_id)
+        alias_ids = [
+            row[0]
+            for row in db.query(Payee.payee_id).filter(Payee.merged_into_payee_id == root_id).all()
+        ]
+        query = query.filter(Transaction.payee_id.in_([root_id, *alias_ids]))
+
+    if category_id:
+        root_id = resolve_canonical_category_id(db, category_id)
+        selected = db.query(Category).filter(Category.category_id == root_id).first()
+
+        match_ids = {root_id}
+        match_ids.update(
+            row[0]
+            for row in db.query(Category.category_id)
+            .filter(Category.merged_into_category_id == root_id)
+            .all()
+        )
+
+        # A top-level category has no transactions of its own in practice —
+        # everything gets tagged to one of its subcategories — so picking
+        # "Bills" must roll up every "Bills: X" subcategory (and each of
+        # their aliases) too, not just rows tagged to "Bills" directly.
+        if selected and selected.parent_category_id is None:
+            sub_ids = [
+                row[0]
+                for row in db.query(Category.category_id)
+                .filter(Category.parent_category_id == root_id)
+                .all()
+            ]
+            match_ids.update(sub_ids)
+            if sub_ids:
+                match_ids.update(
+                    row[0]
+                    for row in db.query(Category.category_id)
+                    .filter(Category.merged_into_category_id.in_(sub_ids))
+                    .all()
+                )
+
+        query = query.filter(Transaction.category_id.in_(match_ids))
 
     # Order newest first
     query = query.order_by(Transaction.cash.desc(), Transaction.entry.desc())
